@@ -1,0 +1,23 @@
+<?xml version="1.0"?>
+<package format="2">
+  <name>face_recognition_ros1</name>
+  <version>1.0.0</version>
+  <description>ROS1 (Noetic) Face Recognition Node (C++) based on YOLOv8 + ArcFace</description>
+  <maintainer email="user@example.com">User</maintainer>
+  <license>MIT</license>
+
+  <buildtool_depend>catkin</buildtool_depend>
+
+  <depend>roscpp</depend>
+  <depend>sensor_msgs</depend>
+  <depend>image_transport</depend>
+  <depend>cv_bridge</depend>
+  <depend>std_msgs</depend>
+  <depend>std_srvs</depend>
+  <depend>face_recognition_ros1_interfaces</depend>
+
+  <exec_depend>face_recognition_ros1_interfaces</exec_depend>
+
+  <export>
+  </export>
+</package>

@@ -1,0 +1,11 @@
+string id
+string name
+string title
+float32 confidence
+string scene
+string map_location
+builtin_interfaces/Time timestamp
+uint32 x
+uint32 y
+uint32 width
+uint32 height

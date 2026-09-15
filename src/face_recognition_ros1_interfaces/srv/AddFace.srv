@@ -1,0 +1,9 @@
+string name
+string title
+string image_data
+string scene
+string map_location
+---
+string id
+bool success
+string message

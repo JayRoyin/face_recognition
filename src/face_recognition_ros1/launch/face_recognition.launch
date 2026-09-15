@@ -1,0 +1,20 @@
+<launch>
+  <arg name="image_topic" default="/image_raw" />
+  <arg name="result_topic" default="/face/recognition_result" />
+  <arg name="confidence_threshold" default="0.7" />
+  <arg name="db_path" default="/tmp/face_db/faces.db" />
+  <arg name="faces_dir" default="/tmp/face_db/faces" />
+  <arg name="detection_model" default="/models/det_10g.onnx" />
+  <arg name="recognition_model" default="/models/w600k_r50.onnx" />
+
+  <node pkg="face_recognition_ros1" type="face_recognition_node"
+        name="face_recognition_node" output="screen">
+    <param name="image_topic" value="$(arg image_topic)" />
+    <param name="result_topic" value="$(arg result_topic)" />
+    <param name="confidence_threshold" value="$(arg confidence_threshold)" />
+    <param name="db_path" value="$(arg db_path)" />
+    <param name="faces_dir" value="$(arg faces_dir)" />
+    <param name="detection_model" value="$(arg detection_model)" />
+    <param name="recognition_model" value="$(arg recognition_model)" />
+  </node>
+</launch>

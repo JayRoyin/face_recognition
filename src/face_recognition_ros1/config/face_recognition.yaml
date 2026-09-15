@@ -1,0 +1,11 @@
+/**\n * Face Recognition Node configuration\n *
+ * image_topic: Input image topic\n * result_topic: Output face recognition results topic\n * confidence_threshold: Recognition similarity threshold (0.0 - 1.0)\n * db_path: SQLite database file path\n * faces_dir: Directory to store face images\n * detection_model: Path to YOLO face detection ONNX model\n * recognition_model: Path to ArcFace recognition ONNX model\n */
+face_recognition_node:
+  ros__parameters:
+    image_topic: "/image_raw"
+    result_topic: "/face/recognition_result"
+    confidence_threshold: 0.7
+    db_path: "/tmp/face_db/faces.db"
+    faces_dir: "/tmp/face_db/faces"
+    detection_model: "/models/det_10g.onnx"
+    recognition_model: "/models/w600k_r50.onnx"

@@ -1,0 +1,16 @@
+/**:
+  ros__parameters:
+    image_topic: "/image_raw"
+    result_topic: "/face/recognition_result"
+
+    confidence_threshold: 0.7
+    nms_threshold: 0.5
+
+    db_path: "/tmp/face_db/faces.db"
+    faces_dir: "/tmp/face_db/faces"
+
+    detection_model: "/models/det_10g.onnx"
+    recognition_model: "/models/w600k_r50.onnx"
+
+    default_scene: "default"
+    default_map_location: "unknown"
