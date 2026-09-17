@@ -1,23 +1,54 @@
 #include "face_recognition_core/face_database.hpp"
+
 #include <sqlite3.h>
 #include <uuid/uuid.h>
-#include <fstream>
+
 #include <algorithm>
-#include <sys/stat.h>
-#include <sys/types.h>
+#include <cmath>
 #include <cstdio>
-#include <iostream>
 #include <filesystem>
+#include <fstream>
+#include <iostream>
+#include <limits>
+#include <numeric>
+#include <system_error>
+#include <unordered_map>
 
 namespace face_recognition {
+
+namespace {
+
+/** Median of a copy of `v` (empty input => 0). */
+float median_of(std::vector<float> v) {
+    if (v.empty()) return 0.0f;
+    const size_t mid = v.size() / 2;
+    std::nth_element(v.begin(), v.begin() + mid, v.end());
+    const float hi = v[mid];
+    if (v.size() % 2) return hi;
+    std::nth_element(v.begin(), v.begin() + mid - 1, v.end());
+    return 0.5f * (hi + v[mid - 1]);
+}
+
+/** Median absolute deviation (robust scale estimate). */
+float mad_of(const std::vector<float>& v, float med) {
+    if (v.empty()) return 0.0f;
+    std::vector<float> dev(v.size());
+    for (size_t i = 0; i < v.size(); ++i) dev[i] = std::fabs(v[i] - med);
+    return median_of(std::move(dev));
+}
+
+}  // namespace
+
+// -----------------------------------------------------------------------------
 
 class FaceDatabase::Impl {
 public:
     sqlite3* db = nullptr;
     std::string faces_dir;
 
+    // ---------------------------------------------------------------- schema
     bool createTable() {
-        const char* sql = R"(
+        const char* faces_sql = R"(
             CREATE TABLE IF NOT EXISTS faces (
                 id TEXT PRIMARY KEY,
                 name TEXT NOT NULL,
@@ -31,12 +62,28 @@ public:
             )
         )";
 
-        char* errMsg = nullptr;
-        int rc = sqlite3_exec(db, sql, nullptr, nullptr, &errMsg);
-        if (rc != SQLITE_OK) {
-            std::cerr << "[FaceDatabase] createTable failed: " << errMsg << std::endl;
-            sqlite3_free(errMsg);
-            return false;
+        // Extra embeddings ("shots") beyond the primary faces.embedding.
+        const char* templates_sql = R"(
+            CREATE TABLE IF NOT EXISTS face_templates (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                face_id TEXT NOT NULL,
+                embedding BLOB,
+                image_path TEXT,
+                created_at INTEGER
+            )
+        )";
+        const char* index_sql =
+            "CREATE INDEX IF NOT EXISTS idx_face_templates_face_id "
+            "ON face_templates(face_id)";
+
+        for (const char* sql : {faces_sql, templates_sql, index_sql}) {
+            char* errMsg = nullptr;
+            if (sqlite3_exec(db, sql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+                std::cerr << "[FaceDatabase] createTable failed: "
+                          << (errMsg ? errMsg : "?") << std::endl;
+                sqlite3_free(errMsg);
+                return false;
+            }
         }
         return true;
     }
@@ -56,11 +103,43 @@ public:
         return file.good();
     }
 
-    bool insertFace(const FaceRecord& record) {
-        std::string sql = "INSERT INTO faces (id, name, title, embedding, image_path, scene, map_location, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
-        sqlite3_stmt* stmt = nullptr;
+    /** Only delete files we own (inside faces_dir). */
+    void removeOwnedFile(const std::string& path) {
+        if (path.empty() || faces_dir.empty()) return;
+        if (path.compare(0, faces_dir.size(), faces_dir) != 0) return;
+        std::remove(path.c_str());
+    }
 
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+    static void bindEmbedding(sqlite3_stmt* stmt, int idx,
+                              const std::vector<float>& embedding) {
+        if (embedding.empty()) {
+            sqlite3_bind_null(stmt, idx);
+        } else {
+            sqlite3_bind_blob(stmt, idx, embedding.data(),
+                              static_cast<int>(embedding.size() * sizeof(float)),
+                              SQLITE_TRANSIENT);
+        }
+    }
+
+    static std::vector<float> readEmbedding(sqlite3_stmt* stmt, int idx) {
+        std::vector<float> out;
+        if (sqlite3_column_type(stmt, idx) == SQLITE_NULL) return out;
+        const void* data = sqlite3_column_blob(stmt, idx);
+        const int bytes = sqlite3_column_bytes(stmt, idx);
+        if (!data || bytes <= 0) return out;
+        const size_t count = static_cast<size_t>(bytes) / sizeof(float);
+        out.assign(reinterpret_cast<const float*>(data),
+                   reinterpret_cast<const float*>(data) + count);
+        return out;
+    }
+
+    // --------------------------------------------------------------- faces CRUD
+    bool insertFace(const FaceRecord& record) {
+        const char* sql =
+            "INSERT INTO faces (id, name, title, embedding, image_path, scene, "
+            "map_location, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             std::cerr << "[FaceDatabase] insertFace prepare failed: "
                       << sqlite3_errmsg(db) << std::endl;
             return false;
@@ -69,22 +148,16 @@ public:
         sqlite3_bind_text(stmt, 1, record.id.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 2, record.name.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 3, record.title.c_str(), -1, SQLITE_TRANSIENT);
-        if (record.embedding.empty()) {
-            sqlite3_bind_null(stmt, 4);
-        } else {
-            sqlite3_bind_blob(stmt, 4, record.embedding.data(),
-                              static_cast<int>(record.embedding.size() * sizeof(float)),
-                              SQLITE_TRANSIENT);
-        }
+        bindEmbedding(stmt, 4, record.embedding);
         sqlite3_bind_text(stmt, 5, record.image_path.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 6, record.scene.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_text(stmt, 7, record.map_location.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 8, record.created_at);
         sqlite3_bind_int64(stmt, 9, record.updated_at);
 
-        int step_rc = sqlite3_step(stmt);
-        if (step_rc != SQLITE_DONE) {
-            std::cerr << "[FaceDatabase] insertFace step failed (rc=" << step_rc
+        const int rc = sqlite3_step(stmt);
+        if (rc != SQLITE_DONE) {
+            std::cerr << "[FaceDatabase] insertFace step failed (rc=" << rc
                       << "): " << sqlite3_errmsg(db) << std::endl;
             sqlite3_finalize(stmt);
             return false;
@@ -94,86 +167,144 @@ public:
     }
 
     bool deleteFaceById(const std::string& face_id) {
-        std::string sql = "DELETE FROM faces WHERE id = ?";
         sqlite3_stmt* stmt = nullptr;
-
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        if (sqlite3_prepare_v2(db, "DELETE FROM faces WHERE id = ?", -1, &stmt,
+                               nullptr) != SQLITE_OK) {
             return false;
         }
-
         sqlite3_bind_text(stmt, 1, face_id.c_str(), -1, SQLITE_TRANSIENT);
-        bool success = sqlite3_step(stmt) == SQLITE_DONE;
+        const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
         sqlite3_finalize(stmt);
-        return success;
+        return ok;
     }
 
     std::vector<FaceRecord> getAllFaces() {
         std::vector<FaceRecord> records;
-        const char* sql = "SELECT id, name, title, embedding, image_path, scene, map_location, created_at, updated_at FROM faces";
+        const char* sql =
+            "SELECT id, name, title, embedding, image_path, scene, map_location, "
+            "created_at, updated_at FROM faces";
         sqlite3_stmt* stmt = nullptr;
-
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             return records;
         }
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
-            FaceRecord record;
-
-            const char* id_str = (const char*)sqlite3_column_text(stmt, 0);
-            record.id = id_str ? id_str : "";
-
-            const char* name_str = (const char*)sqlite3_column_text(stmt, 1);
-            record.name = name_str ? name_str : "";
-
-            const char* title_str = (const char*)sqlite3_column_text(stmt, 2);
-            record.title = title_str ? title_str : "";
-
-            const void* emb_data = sqlite3_column_blob(stmt, 3);
-            int emb_size = sqlite3_column_bytes(stmt, 3);
-            if (sqlite3_column_type(stmt, 3) != SQLITE_NULL && emb_data && emb_size > 0) {
-                size_t count = emb_size / sizeof(float);
-                record.embedding.assign((const float*)emb_data, (const float*)emb_data + count);
-            }
-
-            const char* img_str = (const char*)sqlite3_column_text(stmt, 4);
-            record.image_path = img_str ? img_str : "";
-
-            const char* scene_str = (const char*)sqlite3_column_text(stmt, 5);
-            record.scene = scene_str ? scene_str : "";
-
-            const char* map_str = (const char*)sqlite3_column_text(stmt, 6);
-            record.map_location = map_str ? map_str : "";
-
-            record.created_at = sqlite3_column_int64(stmt, 7);
-            record.updated_at = sqlite3_column_int64(stmt, 8);
-
-            records.push_back(record);
+            FaceRecord r;
+            const char* s = nullptr;
+            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)); r.id   = s ? s : "";
+            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)); r.name = s ? s : "";
+            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2)); r.title = s ? s : "";
+            r.embedding  = readEmbedding(stmt, 3);
+            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)); r.image_path   = s ? s : "";
+            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5)); r.scene        = s ? s : "";
+            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6)); r.map_location = s ? s : "";
+            r.created_at = sqlite3_column_int64(stmt, 7);
+            r.updated_at = sqlite3_column_int64(stmt, 8);
+            records.push_back(std::move(r));
         }
-
         sqlite3_finalize(stmt);
         return records;
     }
 
     std::string getImagePath(const std::string& face_id) {
-        std::string sql = "SELECT image_path FROM faces WHERE id = ?";
         sqlite3_stmt* stmt = nullptr;
-
-        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+        if (sqlite3_prepare_v2(db, "SELECT image_path FROM faces WHERE id = ?", -1,
+                               &stmt, nullptr) != SQLITE_OK) {
             return "";
         }
-
         sqlite3_bind_text(stmt, 1, face_id.c_str(), -1, SQLITE_TRANSIENT);
-
         std::string path;
         if (sqlite3_step(stmt) == SQLITE_ROW) {
-            const char* path_str = (const char*)sqlite3_column_text(stmt, 0);
-            path = path_str ? path_str : "";
+            const char* p = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0));
+            path = p ? p : "";
         }
-
         sqlite3_finalize(stmt);
         return path;
     }
+
+    // ------------------------------------------------------------ templates
+    bool insertTemplate(const FaceTemplate& t) {
+        const char* sql =
+            "INSERT INTO face_templates (face_id, embedding, image_path, created_at) "
+            "VALUES (?, ?, ?, ?)";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return false;
+        }
+        sqlite3_bind_text(stmt, 1, t.face_id.c_str(), -1, SQLITE_TRANSIENT);
+        bindEmbedding(stmt, 2, t.embedding);
+        sqlite3_bind_text(stmt, 3, t.image_path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 4, t.created_at);
+        const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+        sqlite3_finalize(stmt);
+        return ok;
+    }
+
+    /** @param face_id  empty => every identity. */
+    std::vector<FaceTemplate> getTemplates(const std::string& face_id) {
+        std::vector<FaceTemplate> out;
+        const char* sql_all =
+            "SELECT id, face_id, embedding, image_path, created_at FROM face_templates";
+        const char* sql_one =
+            "SELECT id, face_id, embedding, image_path, created_at FROM face_templates "
+            "WHERE face_id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, face_id.empty() ? sql_all : sql_one, -1, &stmt,
+                               nullptr) != SQLITE_OK) {
+            return out;
+        }
+        if (!face_id.empty()) {
+            sqlite3_bind_text(stmt, 1, face_id.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            FaceTemplate t;
+            t.id = sqlite3_column_int64(stmt, 0);
+            const char* s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            t.face_id    = s ? s : "";
+            t.embedding  = readEmbedding(stmt, 2);
+            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 3));
+            t.image_path = s ? s : "";
+            t.created_at = sqlite3_column_int64(stmt, 4);
+            out.push_back(std::move(t));
+        }
+        sqlite3_finalize(stmt);
+        return out;
+    }
+
+    int countTemplates(const std::string& face_id) {
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db,
+                "SELECT COUNT(*) FROM face_templates WHERE face_id = ?", -1,
+                &stmt, nullptr) != SQLITE_OK) {
+            return 0;
+        }
+        sqlite3_bind_text(stmt, 1, face_id.c_str(), -1, SQLITE_TRANSIENT);
+        int n = 0;
+        if (sqlite3_step(stmt) == SQLITE_ROW) n = sqlite3_column_int(stmt, 0);
+        sqlite3_finalize(stmt);
+        return n;
+    }
+
+    bool deleteTemplates(const std::string& face_id, bool delete_files) {
+        if (delete_files) {
+            for (const auto& t : getTemplates(face_id)) removeOwnedFile(t.image_path);
+        }
+        sqlite3_stmt* stmt = nullptr;
+        const char* sql = face_id.empty() ? "DELETE FROM face_templates"
+                                          : "DELETE FROM face_templates WHERE face_id = ?";
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return false;
+        }
+        if (!face_id.empty()) {
+            sqlite3_bind_text(stmt, 1, face_id.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        const bool ok = sqlite3_step(stmt) == SQLITE_DONE;
+        sqlite3_finalize(stmt);
+        return ok;
+    }
 };
+
+// =============================================================================
 
 FaceDatabase::FaceDatabase() : pImpl(std::make_unique<Impl>()) {}
 
@@ -213,6 +344,7 @@ std::string FaceDatabase::add_face(const std::string& name,
                                   const std::string& map_location) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (name.empty()) return "";
+
     FaceRecord record;
     record.id = pImpl->generateId();
     record.name = name;
@@ -238,22 +370,16 @@ std::string FaceDatabase::add_face(const std::string& name,
 
 bool FaceDatabase::remove_face(const std::string& face_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    std::string image_path = pImpl->getImagePath(face_id);
-
-    if (!image_path.empty()) {
-        std::remove(image_path.c_str());
-    }
-
+    const std::string image_path = pImpl->getImagePath(face_id);
+    pImpl->removeOwnedFile(image_path);
+    pImpl->deleteTemplates(face_id, /*delete_files=*/true);
     return pImpl->deleteFaceById(face_id);
 }
 
 std::shared_ptr<FaceRecord> FaceDatabase::get_face(const std::string& face_id) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
-    auto all = pImpl->getAllFaces();
-    for (auto& r : all) {
-        if (r.id == face_id) {
-            return std::make_shared<FaceRecord>(r);
-        }
+    for (auto& r : pImpl->getAllFaces()) {
+        if (r.id == face_id) return std::make_shared<FaceRecord>(r);
     }
     return nullptr;
 }
@@ -263,32 +389,14 @@ std::vector<FaceRecord> FaceDatabase::list_faces() {
     return pImpl->getAllFaces();
 }
 
-std::shared_ptr<FaceRecord> FaceDatabase::find_matching_face(const std::vector<float>& embedding, float threshold) {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    auto all = pImpl->getAllFaces();
-    float best_sim = threshold;
-    std::shared_ptr<FaceRecord> best_match = nullptr;
-
-    for (auto& record : all) {
-        float sim = compute_similarity(embedding, record.embedding);
-        if (sim > best_sim) {
-            best_sim = sim;
-            best_match = std::make_shared<FaceRecord>(record);
-        }
-    }
-
-    return best_match;
-}
-
 int FaceDatabase::clear_all() {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     auto all = pImpl->getAllFaces();
     for (auto& r : all) {
-        if (!r.image_path.empty()) {
-            std::remove(r.image_path.c_str());
-        }
+        pImpl->removeOwnedFile(r.image_path);
         pImpl->deleteFaceById(r.id);
     }
+    pImpl->deleteTemplates("", /*delete_files=*/true);
     return static_cast<int>(all.size());
 }
 
@@ -297,22 +405,215 @@ int FaceDatabase::get_face_count() {
     return static_cast<int>(pImpl->getAllFaces().size());
 }
 
-bool FaceDatabase::save_image(const std::string& face_id, const std::vector<uint8_t>& data, std::string& out_path) {
+// ---------------------------------------------------------------- templates
+
+bool FaceDatabase::add_template(const std::string& face_id,
+                                const std::vector<float>& embedding,
+                                const std::string& image_path) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (face_id.empty() || embedding.empty()) return false;
+    FaceTemplate t;
+    t.face_id = face_id;
+    t.embedding = embedding;
+    t.image_path = image_path;
+    t.created_at = time(nullptr);
+    return pImpl->insertTemplate(t);
+}
+
+std::vector<FaceTemplate> FaceDatabase::list_templates(const std::string& face_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return pImpl->getTemplates(face_id);
+}
+
+int FaceDatabase::template_count(const std::string& face_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return pImpl->countTemplates(face_id);
+}
+
+bool FaceDatabase::remove_templates(const std::string& face_id) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return pImpl->deleteTemplates(face_id, /*delete_files=*/true);
+}
+
+// ---------------------------------------------------------------- matching
+
+std::vector<MatchCandidate> FaceDatabase::rank_faces(const std::vector<float>& embedding) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    std::vector<MatchCandidate> out;
+    if (embedding.empty()) return out;
+
+    auto faces = pImpl->getAllFaces();
+
+    // identity metadata + primary template
+    std::unordered_map<std::string, MatchCandidate> best;
+    std::unordered_map<std::string, int> counts;
+    for (const auto& f : faces) {
+        MatchCandidate c;
+        c.face_id = f.id;
+        c.name    = f.name;
+        c.title   = f.title;
+        c.template_id = -1;
+        if (!f.embedding.empty()) {
+            c.similarity = compute_similarity(embedding, f.embedding);
+            counts[f.id] += 1;
+        }
+        // keep entry even without a primary embedding: extra templates may exist
+        best[f.id] = c;
+    }
+
+    for (const auto& t : pImpl->getTemplates("")) {
+        if (t.embedding.empty()) continue;
+        auto it = best.find(t.face_id);
+        if (it == best.end()) continue;  // orphan template (identity deleted)
+        const float sim = compute_similarity(embedding, t.embedding);
+        counts[t.face_id] += 1;
+        if (sim > it->second.similarity) {
+            it->second.similarity  = sim;
+            it->second.template_id = t.id;
+        }
+    }
+
+    for (auto& kv : best) {
+        kv.second.template_count = counts[kv.first];
+        if (kv.second.template_count == 0) continue;  // nothing to match against
+        out.push_back(kv.second);
+    }
+
+    std::sort(out.begin(), out.end(),
+              [](const MatchCandidate& a, const MatchCandidate& b) {
+                  return a.similarity > b.similarity;
+              });
+    return out;
+}
+
+MatchResult FaceDatabase::match_face(const std::vector<float>& embedding,
+                                     float raw_threshold,
+                                     float z_threshold,
+                                     int   min_cohort,
+                                     bool  normalize) {
+    MatchResult res;
+    auto ranked = rank_faces(embedding);
+    if (ranked.empty()) {
+        res.reason = "gallery empty (no usable templates)";
+        return res;
+    }
+
+    const MatchCandidate& top = ranked.front();
+    res.face_id        = top.face_id;
+    res.name           = top.name;
+    res.title          = top.title;
+    res.raw_similarity = top.similarity;
+
+    // Cohort = how well this query matches UNRELATED identities. Any template
+    // of another identity, plus the externally supplied impostor cohort, is a
+    // valid sample. A "hub" template that matches everyone inflates this
+    // distribution, which is exactly what we want to penalise.
+    std::vector<float> cohort;
+    for (size_t i = 1; i < ranked.size(); ++i) {
+        // one sample per other identity (its best template)
+        cohort.push_back(ranked[i].similarity);
+    }
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        for (const auto& e : cohort_embeddings_) {
+            if (e.empty()) continue;
+            cohort.push_back(compute_similarity(embedding, e));
+        }
+    }
+
+    res.cohort_size = static_cast<int>(cohort.size());
+    const bool can_normalize = normalize && res.cohort_size >= min_cohort;
+    if (can_normalize) {
+        res.cohort_median = median_of(cohort);
+        res.cohort_mad    = mad_of(cohort, res.cohort_median);
+        // 1.4826 * MAD ~= sigma for a normal distribution.
+        const float sigma = std::max(1e-4f, 1.4826f * res.cohort_mad);
+        res.z_score  = (res.raw_similarity - res.cohort_median) / sigma;
+        res.normalized = true;
+    }
+
+    if (res.raw_similarity < raw_threshold) {
+        res.accepted = false;
+        res.reason   = "below raw threshold";
+        return res;
+    }
+    if (can_normalize && res.z_score < z_threshold) {
+        res.accepted = false;
+        char buf[160];
+        std::snprintf(buf, sizeof(buf),
+                      "below cohort z-score (%.2f < %.2f, median=%.3f mad=%.3f n=%d)",
+                      res.z_score, z_threshold, res.cohort_median, res.cohort_mad,
+                      res.cohort_size);
+        res.reason = buf;
+        return res;
+    }
+
+    res.accepted = true;
+    res.reason   = can_normalize ? "accepted (raw + cohort)" : "accepted (raw only)";
+    return res;
+}
+
+std::shared_ptr<FaceRecord> FaceDatabase::find_matching_face(
+        const std::vector<float>& embedding, float threshold) {
+    float z = 3.0f;
+    int   mc = 3;
+    bool  norm = true;
+    {
+        std::lock_guard<std::recursive_mutex> lock(mutex_);
+        z = z_threshold_;
+        mc = min_cohort_;
+        norm = normalize_;
+    }
+    const MatchResult r = match_face(embedding, threshold, z, mc, norm);
+    if (!r.accepted) return nullptr;
+    return get_face(r.face_id);
+}
+
+// -------------------------------------------------------------- cohort setup
+
+void FaceDatabase::setCohortEmbeddings(std::vector<std::vector<float>> cohort) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    cohort_embeddings_ = std::move(cohort);
+}
+
+void FaceDatabase::setNormalizationDefaults(float z_threshold, int min_cohort,
+                                            bool enabled) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    z_threshold_ = z_threshold;
+    min_cohort_  = min_cohort;
+    normalize_   = enabled;
+}
+
+int FaceDatabase::cohortSize() const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return static_cast<int>(cohort_embeddings_.size());
+}
+
+// -------------------------------------------------------------- images / emb
+
+bool FaceDatabase::save_image(const std::string& face_id,
+                             const std::vector<uint8_t>& data,
+                             std::string& out_path) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     out_path = pImpl->faces_dir + "/" + face_id + ".jpg";
     return pImpl->saveImageFile(out_path, data);
 }
 
-bool FaceDatabase::update_embedding(const std::string& face_id, const std::vector<float>& embedding) {
+bool FaceDatabase::update_embedding(const std::string& face_id,
+                                    const std::vector<float>& embedding) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (face_id.empty() || embedding.empty() || !pImpl->db) return false;
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "UPDATE faces SET embedding = ?, updated_at = ? WHERE id = ?";
-    if (sqlite3_prepare_v2(pImpl->db, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
-    sqlite3_bind_blob(stmt, 1, embedding.data(), static_cast<int>(embedding.size() * sizeof(float)), SQLITE_TRANSIENT);
+    if (sqlite3_prepare_v2(pImpl->db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        return false;
+    }
+    sqlite3_bind_blob(stmt, 1, embedding.data(),
+                      static_cast<int>(embedding.size() * sizeof(float)),
+                      SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 2, time(nullptr));
     sqlite3_bind_text(stmt, 3, face_id.c_str(), -1, SQLITE_TRANSIENT);
-    bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(pImpl->db) == 1;
+    const bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(pImpl->db) == 1;
     sqlite3_finalize(stmt);
     return ok;
 }

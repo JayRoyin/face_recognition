@@ -28,6 +28,8 @@ public:
 };
 ```
 
+`FaceDetection` 含 `bbox`、`confidence` 与 `landmarks`（5 组 `(x, y)`，共 10 个 float）。
+
 ---
 
 ## 2. Backend 自动判定
@@ -43,7 +45,10 @@ public:
 
 ---
 
-## 3. RetinaFace 分支
+## 3. RetinaFace / SCRFD 分支
+
+`det_10g.onnx` 属于 **SCRFD** 系列。它与经典 RetinaFace 共用 9 输出布局，但**解码
+公式不同**，实现时必须区分（见 §3.3）。
 
 ### 3.1 输入张量布局
 
@@ -68,28 +73,65 @@ ONNX Runtime 按图输出声明顺序返回 9 个张量。**模型对 640×640 �
 > 且最小一层被丢弃，**检测结果恒为空**（表现为"完全检测不到人脸"），同时
 > ONNX Runtime 会为每个输出打印 `VerifyOutputSizes` 警告。
 
-### 3.2 预处理
+### 3.2 预处理：letterbox（等比缩放 + 补边）
 
 ```cpp
-BGR → RGB → resize(input_width × input_height) → blobFromImage(scale=1/128, mean=127.5)
+BGR → 等比缩放 s = min(W/w, H/h) → 居中贴到 W×H 黑色画布 → RGB
+    → blobFromImage(scale=1/128, mean=127.5)
 ```
 
-### 3.3 解码
+**为什么必须 letterbox**：网络输入是正方形。若用普通 `resize` 把非正方形帧硬拉成
+正方形，人会被拉伸——1280×720 的帧横向压 4×、纵向只压 2.25×，**畸变 1.78×**。
+关键点回归是在**无畸变**人脸上训练的，畸变会直接劣化 5 点精度，而下游的对齐
+（默认启用，见 [face_recognizer.md §2.1](face_recognizer.md)）完全依赖关键点精度。
+
+坐标反算（`LetterboxInfo`）：
 
 ```
-stride[3]         = {8, 16, 32}
-variance[2]       = {0.1, 0.2}
-anchor 宽高        = stride*4（anchor_type 1 高度 ×1.5）
-grid              = input_size / stride，每格 2 个 anchor
-cx, cy            = (gx + 0.5) * stride, (gy + 0.5) * stride
-x1 = cx - dx1*variance[0]*aw      x2 = cx + dx2*variance[1]*aw
-y1 = cy - dy1*variance[0]*ah      y2 = cy + dy2*variance[1]*ah
+x_img = (x_net - pad_x) / scale
+y_img = (y_net - pad_y) / scale
 ```
 
-坐标按 `img_w/input_w`、`img_h/input_h` 缩放回原图，并 clamp 到图像范围。
-过滤条件：`conf ≥ confidence_threshold` 且框的 `w ≥ 4` 且 `h ≥ 4`。
+> **推论（对选型很重要）**：`--input-size` 越小，人脸在网络输入里占的像素越少。
+> 1280×720 采集 + `--input-size 320` ⇒ 人脸被缩到 **1/4**，关键点精度明显下降。
+> 16:9 采集建议配 `--input-size 640`（此时帧恰好是输入的 2 倍）。
 
-关键点同样按 anchor + variance 反算，共 5 组 `(x, y)`。
+### 3.3 解码（SCRFD 约定）
+
+```
+strides[3]  = {8, 16, 32}
+grid        = input_size / stride，每格 2 个 anchor（anchor_type = 0 / 1）
+cx, cy      = gx * stride, gy * stride          // 无 +0.5 单元格偏移
+
+x1 = cx - bbox[i][0] * stride
+y1 = cy - bbox[i][1] * stride
+x2 = cx + bbox[i][2] * stride
+y2 = cy + bbox[i][3] * stride
+
+kps_x[k] = cx + land[i][2k]   * stride
+kps_y[k] = cy + land[i][2k+1] * stride          // k = 0..4
+```
+
+随后：
+
+1. 用 letterbox 参数把坐标映射回原图（`x_img = (x_net - pad_x) / scale`）；
+2. clamp 到图像范围；
+3. 过滤：`conf ≥ confidence_threshold` 且框宽高 `≥ 4`。
+
+> ⚠️ **不要套用经典 RetinaFace 的 variance / anchor-size 公式**
+> （`x1 = cx - raw[0] * variance[0] * (stride*4)` 这类）。SCRFD 的回归头输出的距离
+> 已经按特征 stride 归一化，乘 `stride` 即可；再叠一层 `variance(0.1/0.2) × anchor宽高`
+> 会把解码出的距离整体缩到 **0.4 倍（y 方向 0.8 倍）**，后果是：
+>
+> | 受影响对象 | 现象 |
+> |---|---|
+> | 边界框 | 缩到真值约 60%，**下巴与额头被切掉** |
+> | 5 点关键点 | 被压向 anchor 中心（双眼间距只剩真值约 0.55） |
+> | 下游对齐 | 相似变换为了把小点距放大到模板尺寸而**放大画面**，裁剪里只剩眼睛和鼻子 |
+> | 最终表现 | 特征区分度崩塌，**不同的人之间相似度高达 0.6~0.7，而本人只有 0.6** |
+>
+> 该缺陷已在 `postprocessRetinaFace()` 中修复，排查过程见
+> [FAQ/troubleshooting.md](../FAQ/troubleshooting.md)。
 
 ### 3.4 NMS 与截断
 
@@ -109,6 +151,7 @@ y1 = cy - dy1*variance[0]*ah      y2 = cy + dy2*variance[1]*ah
 | 2 维 | `dims == 2` | 按 `rows/cols` 解析 |
 
 置信度取所有类别的最大值（YOLOv8-face 通常仅 1 类），随后同样做 NMS 与截断。
+该分支**不输出关键点**，因此调用方只能走 bbox 裁剪前端。
 
 ---
 
@@ -120,8 +163,8 @@ y1 = cy - dy1*variance[0]*ah      y2 = cy + dy2*variance[1]*ah
 | `nms_threshold` | `0.5` | 调低 → 重叠框抑制更激进 |
 | `input_size` | `640` | **性能主开关**：N 减半约 4× 提速，小脸召回下降 |
 
-> `detect()` 内部使用 `resize` 而非 letterbox，长宽比会被拉伸。
-> 若需保持比例，应在调用前对原图做预处理。
+> 预处理与推理**始终走 letterbox**（等比 + 补边），不会拉伸人脸；
+> `setInputSize()` 只影响网络输入边长，不改变这一行为。
 
 ---
 
@@ -148,12 +191,12 @@ y1 = cy - dy1*variance[0]*ah      y2 = cy + dy2*variance[1]*ah
 #include <opencv2/imgcodecs.hpp>
 
 face_recognition::FaceDetector detector;
-if (!detector.initialize("models/det_10g.onnx", 0.5f, 0.5f, 320)) {
+if (!detector.initialize("models/det_10g.onnx", 0.5f, 0.5f, 640)) {
     std::cerr << detector.getLastError() << std::endl;
 }
 std::cout << "backend = " << detector.backend() << std::endl;   // retinaface
 
-cv::Mat image = cv::imread("test_2.png");
+cv::Mat image = cv::imread("alice.jpg");
 for (const auto& det : detector.detect(image, 10)) {
     // det.bbox / det.confidence / det.landmarks (10 floats)
 }

@@ -42,9 +42,45 @@ mkdir -p /tmp/face_db/faces
 | `--port <n>` | `8080` | 否 | HTTP 监听端口 |
 | `--db <path>` | — | **是** | SQLite 数据库路径 |
 | `--faces-dir <path>` | — | **是** | 人脸缩略图存放目录 |
-| `--detection-model <path>` | — | 否 | 传入后启用录入时自动检测人脸 |
-| `--recognition-model <path>` | — | 否 | 传入后启用录入时自动提取 embedding（需同时传 `--detection-model`） |
+| `--detection-model <path>` | **自动发现** | 否 | 人脸检测模型 |
+| `--recognition-model <path>` | **自动发现** | 否 | 入录时提取 embedding 的模型 |
+| `--allow-no-embedding` | 关 | 否 | 允许写入**没有特征**的记录（默认拒绝，见下） |
 | `--help` / `-h` | — | 否 | 打印帮助 |
+
+#### 模型自动发现（v2 新增）
+
+不再必须手动传模型路径。按以下顺序查找 `det_10g.onnx` / `w600k_r50.onnx`：
+
+```
+1. --detection-model / --recognition-model        （命令行，最高优先）
+2. FACE_DETECTION_MODEL / FACE_RECOGNITION_MODEL  （环境变量）
+3. ./models/                                       （当前工作目录）
+4. <exe>/models/   <exe>/../../models/             （install/bin 安装树）
+```
+
+因此在项目根目录直接启动即可：
+
+```bash
+./install/bin/face_db_web --port 8080 \
+    --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces
+```
+
+#### 为什么默认拒绝"无特征"录入
+
+若模型加载失败，历史版本的 Web 后台会把记录以 `embedding = NULL` 写入 ——
+**这种记录永远无法被识别**，症状是"页面里明明有人，识别却怎么都认不出"。
+
+现在：
+
+- 启动时会打印醒目警告（含修复方法）；
+- 录入时若拿不到 embedding，返回 **HTTP 409** 并说明原因，**不再产生不可用记录**；
+- 确实只想存文字信息时才用 `--allow-no-embedding`。
+
+已经存在的 `NULL` 记录可以直接重建（缩略图已存档，无需重新上传）：
+
+```bash
+./src/face_recognition_standalone/build/face_recognition_app backfill --all
+```
 
 ### 2.2 环境变量回退
 
@@ -97,22 +133,25 @@ Embedding extraction: DISABLED (records will be stored with NULL embedding)
 ┌─────────────────────────────────────────────┐
 │ Face Database Management                    │
 ├─────────────────────────────────────────────┤
-│ [Add Face]                                  │
-│  Name       [_______________]               │
-│  Title      [_______________]               │
-│  Scene      [default____________]           │
-│  Map        [unknown____________]           │
-│  Image URL  [http://...]      [Load]        │
-│  Or Upload  [选择文件]                      │
+│ Add Face                                    │
+│  Name         [_______________]             │
+│  Title        [_______________]             │
+│  Scene        [default________]             │
+│  Map Location [unknown________]             │
+│  Image URL    [http://...]                  │
+│  Or Upload    [选择文件]                    │
 │  [预览缩略图]                               │
-│  [Add Face 按钮]                            │
+│  [ Add Face ]                               │
 ├─────────────────────────────────────────────┤
-│ Face List (N)            [Refresh]          │
-│ ┌──┬──┬──┬──┬──┬──┬──┐                      │
-│ │图片│姓名│职│场│位置│ID│删除│               │
-│ └──┴──┴──┴──┴──┴──┴──┘                      │
+│ Face List (N)                               │
+│ ┌────┬────┬────┬────┬────┬────┬────┐        │
+│ │图片│姓名│职位│场景│位置│ ID │删除│        │
+│ └────┴────┴────┴────┴────┴────┴────┘        │
 └─────────────────────────────────────────────┘
 ```
+
+> 页面**没有**独立的 "Load" / "Refresh" 按钮：填 `Image URL` 时输入框失焦即自动
+> 预览；列表在页面加载、以及每次增删之后自动刷新。
 
 ### 入库一张人脸的完整流程
 
@@ -122,14 +161,20 @@ Embedding extraction: DISABLED (records will be stored with NULL embedding)
    - **Scene**：业务场景，如 `office` / `gate` / `factory`（默认 `default`）
    - **Map Location**：物理位置，如 `5F-A区`（默认 `unknown`）
 2. **准备人脸图片**（二选一）
-   - **URL 方式**：填入 `Image URL`，触发 `onchange` 后自动预览
-   - **本地上传**：点击 `Or Upload` 选择本地图片
+   - **URL 方式**：填入 `Image URL`，输入框失焦后自动经 `<canvas>` 转为 JPEG 并预览
+     （跨域图片需要对方允许 `crossOrigin`，否则会提示加载失败）
+   - **本地上传**：点击 `Or Upload` 选择本地图片，由 `FileReader` 读为 base64
 3. **预览确认**：能清楚看到一张正面人脸最佳
-4. **点击 `Add Face`**：弹出 `Face added successfully`
-5. **列表自动追加新条目**（可点 `Refresh` 手动刷新）
+4. **点击 `Add Face`**：成功时弹出 `Face added with embedding`
+   （拿不到特征时返回 HTTP 409，提示 `Refused: no embedding could be extracted ...`）
+5. **列表自动追加新条目**，并显示缩略图与 `ID`
 
 > **图片要求**：建议清晰、正面、单人脸、≥ 200×200 的 JPG/PNG。
 > 系统自动检测人脸、提取 512 维 ArcFace 特征并写入 SQLite。
+>
+> **一个人要存多张照片**（不戴眼镜 / 侧脸等）时，Web 页面目前只提供
+> 新增 / 删除 / 清空，**不支持追加模板**；请改用 CLI：
+> `face_recognition_app add-template --id <uuid> --image <照片>`。
 
 ### 删除
 
@@ -194,7 +239,7 @@ curl -X POST http://localhost:8080/api/faces/clear
 
 ## 6. 安全性说明
 
-当前实现**未内置**认证 / CSRF / HTTPS（见 `docs/TODO.md` 待办项）。因此：
+当前实现**未内置**认证 / CSRF / HTTPS。因此：
 
 - 仅建议部署在**受信任内网**
 - 需要对外暴露时，请前置反向代理（Nginx）并启用 Basic Auth / TLS

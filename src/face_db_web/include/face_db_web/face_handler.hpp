@@ -17,7 +17,8 @@ class FaceHandler {
 public:
     FaceHandler(std::shared_ptr<face_recognition::FaceDatabase> database,
                 std::shared_ptr<face_recognition::FaceDetector>   detector   = nullptr,
-                std::shared_ptr<face_recognition::FaceRecognizer> recognizer = nullptr);
+                std::shared_ptr<face_recognition::FaceRecognizer> recognizer = nullptr,
+                bool require_embedding = false);
 
     HttpResponse index(const HttpRequest& req);
     HttpResponse listFaces(const HttpRequest& req);
@@ -31,6 +32,9 @@ private:
     std::shared_ptr<face_recognition::FaceDetector>   detector_;
     std::shared_ptr<face_recognition::FaceRecognizer> recognizer_;
     std::string templates_dir_;
+    // When true, an enrolment that yields no embedding is rejected instead of
+    // silently creating a record the recognizer can never match.
+    bool require_embedding_ = false;
 
     std::string renderIndex();
     std::string renderFaceList();

@@ -14,6 +14,8 @@
 | [`sqlite3/`](../../third_party/sqlite3/) | **ON** | SQLite 官方 amalgamation，启用 R-Tree / GEOPOLY 等编译选项 |
 | [`spatialite/`](../../third_party/spatialite/) | OFF | 可选的完整 GIS 栈 |
 | [`libmicrohttpd/`](../../third_party/libmicrohttpd/) | OFF | 可选，默认使用系统 `libmicrohttpd-dev` |
+| [`insightface/`](../../third_party/insightface/) | — | **参考实现，不参与构建**：`det_10g.onnx` / `w600k_r50.onnx` 的原始出处 |
+| [`opencv_zoo/`](../../third_party/opencv_zoo/) | — | **参考实现，不参与构建**：Apache-2.0 的 YuNet + SFace 替代方案 |
 
 构建行为：
 
@@ -184,8 +186,39 @@ cmake --install third_party/sqlite3/build
 
 ---
 
-## 9. 相关文档
+## 9. 参考实现（reference-only，不参与构建）
+
+`third_party/` 下有两个**只读参考仓库**，用于比对 `face_recognition_core`
+的检测 / 对齐 / 特征前端：
+
+| 模块 | 上游 | 固定 commit | 许可 | 用途 |
+|---|---|---|---|---|
+| `third_party/insightface/` | [deepinsight/insightface](https://github.com/deepinsight/insightface) | `1480e705…` | 代码 MIT / **模型权重非商业** | 本项目 `det_10g.onnx`（SCRFD-10GF）与 `w600k_r50.onnx`（ArcFace R50）的原始出处 |
+| `third_party/opencv_zoo/` | [opencv/opencv_zoo](https://github.com/opencv/opencv_zoo) | `47534e27…` | **Apache-2.0** | YuNet + SFace，商用无授权风险的替代方案 |
+
+关键区别：
+
+- **没有 `CMakeLists.txt`**，`build.sh` 不构建，不被链接进任何目标
+- 已在 `.gitignore` 中排除（源码约 80 MB，opencv_zoo 的 LFS 权重约 1.4 GB 被刻意跳过）
+- 新机器需先执行一次拉取脚本：
+
+```bash
+./third_party/fetch_reference.sh          # 拉取 / 复用已有副本
+./third_party/fetch_reference.sh --clean  # 删除本地副本
+```
+
+脚本内固化了上述 commit；实际 checkout 与记录值不一致时会打 `WARN`，
+提示需要重新核对对照表。
+
+**逐文件的上下游对照表（含已确认的差异）见
+[`third_party/REFERENCE.md`](../../third_party/REFERENCE.md)。**
+排查检测精度、对齐质量、识别相似度分布时，应首先阅读该文件。
+
+---
+
+## 10. 相关文档
 
 - [源码开发快速开始](../setup.md)
 - [架构说明](../architecture.md)
 - [常见问题排查](../FAQ/troubleshooting.md)
+- [上游参考实现对照表](../../third_party/REFERENCE.md)

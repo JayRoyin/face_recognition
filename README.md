@@ -1,167 +1,183 @@
-<!-- <div align="center">
-<img src="docs/img/logo.jpg" alt="项目Logo" width="500"/> -->
+<div align="center">
+<img src="docs/img/logo.jpg" alt="项目Logo" width="500"/>
 
 # Face Recognition Node
 
-## 基于 YOLOv8/RetinaFace + ArcFace 的 ROS1/ROS2 双版本人脸识别节点，含非 ROS 实时识别与 Web 人脸库管理
+## 本地离线实时人脸检测与识别系统，四种运行形态复用同一核心算法库
 
 ---
-<!-- 技术栈徽章：按需替换，支持Python、C++、系统、框架、硬件、容器等 -->
-[![Python](https://img.shields.io/badge/Python3.11-3776AB?logo=python&logoColor=fff)](#)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu22.04-E95420?logo=ubuntu&logoColor=white)](#)
-[![C++](https://img.shields.io/badge/C++-17-blue.svg)]()
+[![C++](https://img.shields.io/badge/C++-17-00599C?logo=cplusplus&logoColor=fff)](#)
+[![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04%20%7C%2022.04-E95420?logo=ubuntu&logoColor=white)](#)
 [![ROS2](https://img.shields.io/badge/ROS2-Humble-22314E?logo=ros&logoColor=white)](#)
 [![ROS1](https://img.shields.io/badge/ROS1-Noetic-22314E?logo=ros&logoColor=white)](#)
-[![OpenCV](https://img.shields.io/badge/OpenCV-%E2%89%A54.5-5C3EE8?logo=opencv&logoColor=white)](#)
-[![ONNXRuntime](https://img.shields.io/badge/ONNX%20Runtime-C%2B%2B-005CED?logo=onnx&logoColor=white)](#)
-[![SQLite3](https://img.shields.io/badge/SQLite3-vendored-003B57?logo=sqlite&logoColor=white)](#)
-[![硬件/框架](https://img.shields.io/badge/Platform-x86__64%20%7C%20aarch64%2FJetson-green.svg)]()
+[![OpenCV](https://img.shields.io/badge/OpenCV-%E2%89%A5%204.5-5C3EE8?logo=opencv&logoColor=white)](#)
+[![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-1.16-005CED?logo=onnx&logoColor=white)](#)
+[![SQLite3](https://img.shields.io/badge/SQLite3-vendored%20(rtree)-003B57?logo=sqlite&logoColor=white)](#)
+[![Platform](https://img.shields.io/badge/Platform-x86__64%20%7C%20aarch64%2FJetson-green.svg)](#)
 </div>
 
 ## 项目介绍
 
-**Face Recognition Node** 是面向【机器人控制 / 边缘视觉感知 / 门禁考勤等业务系统】的人脸识别核心工程，
-基于【C++17 + RetinaFace / YOLOv8-Face 检测 + ArcFace 512 维特征 + SQLite3 + ROS1/ROS2】开发，
-适配【Ubuntu 20.04（Noetic）/ Ubuntu 22.04（Humble）/ Jetson Orin 系列 aarch64】，
-聚焦【检测、识别、人脸库管理的一体化离线部署与跨平台可复现编译】。
+**Face Recognition Node** 是面向**机器人控制 / 边缘设备部署**的实时人脸检测识别工程，基于 **C++17 + ONNX Runtime + OpenCV + SQLite3** 开发，适配 **Ubuntu 20.04 / 22.04 与 Jetson（aarch64）**，聚焦**本地离线运行、一人多模板、多通路共享同一人脸库**的实用识别场景。
 
-所有 C/C++ 第三方依赖（SQLite3、SpatiaLite）均 **vendoring 到 `third_party/`，不修改系统任何库**，
-可一键在 x86_64 与 aarch64 平台复现编译。
+检测使用 **SCRFD（`det_10g.onnx`）**，一次前向同时输出边界框、置信度与 5 点关键点；识别使用 **ArcFace（`w600k_r50.onnx`）**，输出 **512 维 L2 归一化 embedding**，比对即余弦相似度。取脸默认走 5 点关键点对齐（`norm_crop`），把姿态归一化到标准正脸模板后再提特征。
 
 ### 核心功能
 
-- **人脸检测（基础能力）**：内置 RetinaFace（`det_10g.onnx`，9 输出 + 5 点关键点）与
-  YOLOv8（单输出 `[1, 84, N]`）双 backend，**按模型输出自动判定**，含自定义贪心 NMS
-  与置信度截断，单帧最多 10 张人脸。
-- **人脸识别（基础能力）**：ArcFace `w600k_r50.onnx` 提取 512 维 L2 归一化 embedding，
-  与 SQLite 人脸库做 1:N 余弦相似度检索，返回姓名、职位、场景、位置与相似度。
-- **非 ROS 实时识别（适配能力）**：`face_recognition_standalone` 是**零 ROS 依赖**的
-  C++17 可执行，支持 USB 摄像头 / RTSP / HTTP-MJPEG / 视频文件 / 单图 / 图片目录六种输入源，
-  支持 headless、MP4 录制、自动抓拍、纯检测模式；复用与 ROS 版本**完全相同**的核心库，
-  检测精度与数据库 100% 互通。
-- **ROS 接口（扩展能力）**：ROS1 Noetic 与 ROS2 Humble 双版本，提供 **4 个 Service
-  （`/face_db/{add,remove,list,clear}`）+ 2 个 Topic（`/image_raw` 订阅、
-  `/face/recognition_result` 发布）**，ROS2 额外提供 `face_viewer_node`（标注图发布）
-  与 `face_stream_server`（HTTP MJPEG 推流）。
-- **Web 人脸库管理（基础能力）**：基于 libmicrohttpd 的 HTTP 服务，浏览器可视化
-  增 / 删 / 查 / 清空，支持 URL 图片与本地上传，**录入时自动检测人脸并提取特征**。
-- **人脸库统一存储（核心优势）**：Web / ROS / standalone 三路共用同一份 SQLite schema，
-  默认均指向 `/tmp/face_db/faces.db`，**任一处录入即可被其余通路立即识别**；
-  提供 `backfill` / `--auto-backfill` 自动补齐缺失特征。
-- **第三方框架与中间件对接**：OpenCV ≥ 4.5（图像处理与 ArcFace 推理）、
-  ONNX Runtime C++（RetinaFace 推理，解决 OpenCV DNN 无法执行动态 Reshape 的问题）、
-  SQLite3 amalgamation（启用 R-Tree / GEOPOLY / FTS5 / JSON1，消除
-  `undefined symbol: sqlite3_rtree_query_callback`）、libmicrohttpd（HTTP / MJPEG）、
-  ROS1/ROS2（`cv_bridge` / `image_transport` / `ament_cmake` / `catkin`）。
+- **人脸检测与关键点定位**：SCRFD 单模型输出框 + 5 点关键点；letterbox 等比预处理避免人脸拉伸；后处理按输入尺寸自适应推导 anchor 层，`--input-size` 可自由调整（N 减半约 4× 提速）。同时兼容 YOLOv8 单输出模型作为备用 backend。
+- **人脸特征提取与 verify 判定**：`extract_embedding()` 输出 512 维特征（存库为 2048 字节 BLOB）。取脸有**对齐 / bbox 裁剪两个前端**（默认对齐，`--no-align` 可切），前端变更后必须重建特征。判定链路是「检测 → 取脸 → 提特征 → 全库排名 → 队列归一化 → 阈值判定」，`verify --image` 把这条链路的每一步分数与拒绝原因都打印出来，是排查识别问题的第一手段。
+- **人脸库与匹配**：单个 SQLite 文件存身份（`id` / `name` / `title` / `scene` / `map_location` / 512 维 `embedding`）与**任意多张附加模板**；匹配取一个身份下所有模板的最高分，因此补一枪"不戴眼镜 / 侧脸"即可覆盖真实外观变化。附加队列归一化（median/MAD → z 分数）抑制低质量模板"乱认人"。
+- **四种运行形态**：ROS2 节点（含 viewer 与 MJPEG 推流）、ROS1 节点、**零 ROS 依赖的 standalone CLI**（摄像头 / RTSP / HTTP / 视频文件 / 图片目录）、Web 人脸库后台。四者复用同一个 `face_recognition_core`，模型权重与数据库 100% 互通。
+- **工程化能力**：`build.sh` 一键构建与依赖检查；第三方 C/C++ 依赖 vendoring（SQLite3 强制开启 R-Tree/GEOPOLY）；核心库以 CMake 安装 + RPATH 解析，对系统目录零写入；`backfill --all` 作为"特征空间迁移"的标准手段。
 
 ## Pipeline Overview
 
 ```mermaid
 flowchart LR
-    A["🔧 1. 源码开发<br/>本地/设备端开发"]
-    B["🤖 2. 专项模块调试<br/>core / standalone / web / ros"]
-    subgraph build["编译构建 build.sh"]
-        C["🔨 3. 编译校验<br/>vendored SQLite3 + CMake/colcon"]
+    A["🔧 1. 环境与模型准备<br/>build.sh MODELS"]
+    B["🤖 2.4种运行形态<br/>ROS1 / ROS2 / standalone / web"]
+
+    subgraph build["编译构建"]
+        C["🔨 3. build.sh CORE / STANDALONE / ROS2 / WEB"]
     end
-    D["🚀 4. 部署运行<br/>ROS 节点 / standalone / Web 服务"]
+
+    D["🚀 4. 人脸录入与识别<br/>add / add-bulk / run"]
+    E["📄 5. 特征固化与判定<br/>backfill --all / verify"]
+
     A --> build
     B --> build
     build --> D
+    D --> E
+    E -.->|"更换前端 / 模型后重建"| D
 ```
 
 ## Quick Start
 
 ### 🔧 1. 源码开发快速开始 [[Doc](docs/setup.md)]
 
-核心依赖：`cmake` / `make` / `g++`（C++17）、`libopencv-dev ≥ 4.5`、`uuid-dev`、
-`libsqlite3-dev`、**ONNX Runtime C++**；构建 Web 后台需额外 `libmicrohttpd-dev`；
-构建 ROS 节点需对应版本的 `ros-humble-*` / `ros-noetic-*` 包。
-推荐使用一键脚本 `./build.sh`（内部自动构建 vendored SQLite3 并按需 walk-up 探测
-`third_party/`）；**不支持**绕过 vendored 依赖直接修改系统库的构建方式。
+依赖 ONNX Runtime（C++）、OpenCV ≥ 4.5、SQLite3、libuuid；ROS 目标额外需要 ROS1 Noetic 或 ROS2 Humble。
+支持 **Ubuntu 20.04 / 22.04** 与 **Jetson aarch64**，**不支持 Windows**；推荐直接在目标机器上构建（第三方依赖走 vendoring，不写系统目录）。
 
 详见 [源码开发快速开始](./docs/setup.md)。
 
 ### 🤖 2. 专项模块快速开始 [[Doc](docs/module/quick_start.md)]
 
-项目由 **核心算法库 + 4 个应用层模块** 组成，每个模块均可独立构建与调试：
-`face_recognition_core`（公共库）、`face_recognition_standalone`（零 ROS 实时识别 CLI）、
-`face_recognition_ros2`（节点 + viewer + MJPEG 推流）、`face_recognition_ros1`（单节点）、
-`face_db_web`（Web 人脸库后台）。各模块最短跑通路径与推荐组合工作流见文档。
+项目含 **5 个可独立构建的应用层模块 + 1 个公共核心库**：核心算法库、standalone CLI、ROS2 节点、ROS1 节点、Web 人脸库后台。每个模块的最短跑通路径见该文档。
 
 详见 [模块快速开始](./docs/module/quick_start.md)。
 
 ### 🔨 3. 编译运行
 
+用**Web 后台可视化传图录入**，再用实时识别程序验证 —— 全程不需要记 CLI 参数。
+
 ```bash
 # 1. 克隆项目代码
-git clone 项目仓库地址
+git clone <项目仓库地址>
 cd face_recognition
-git submodule update --init --recursive
 
-# 2. 加载环境依赖（按需保留）
-source /opt/ros/humble/setup.bash          # ROS2 目标需要
+# 2. 下载模型（首次必须）
+./build.sh MODELS
 
-# 3. 下载模型 + 工程编译
-./build.sh MODELS                          # 下载 det_10g.onnx + w600k_r50.onnx（必须）
-./build.sh ROS2                            # 或 CORE / ROS1 / STANDALONE / WEB / ALL
+# 3. 构建「Web 人脸库后台」与「非 ROS 实时识别程序」
+./build.sh WEB
+./build.sh STANDALONE
+# 等价于：make -C src/face_recognition_standalone/build -j$(nproc)
 
-# 4. 启动运行（ROS2 + USB 摄像头 + 浏览器查看）
-source scripts/setup_env.sh
-ros2 launch face_recognition_ros2 usb_cam_face.launch.py
-# 浏览器打开 http://localhost:8090/
-```
-
-分模块启动示例：
-
-```bash
-# 非 ROS 实时识别（无需 source ROS 环境）
-./src/face_recognition_standalone/build/face_recognition_app run --source 0
-
-# Web 人脸库管理后台
-./install/bin/face_db_web --port 8080 \
-    --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces
-```
-
-构建产物：`install/`（核心库 / ROS2 包 / `bin/face_db_web` / `vendored/lib`）、
-`src/face_recognition_standalone/build/face_recognition_app`、
-`src/face_recognition_ros1/devel/`。构建日志见 `build.log`。
-
-### 🧪 4. 单元测试/模块测试（可选）
-
-```bash
-# ROS2 包静态检查（ament_lint）
-colcon test --packages-select face_recognition_ros2 --event-handlers console_direct+
-colcon test-result --verbose
-
-# 离线功能验证（不依赖 ROS 与摄像头）
+# 4. 启动 Web 人脸库后台（与实时识别共用同一个 SQLite 库）
 APP=./src/face_recognition_standalone/build/face_recognition_app
-$APP add --image ./test_2.png --name test_person --scene test
-$APP list                                    # 期望 emb=yes
-$APP run --source ./test_2.png --no-display  # 期望检测到人脸并输出相似度
+$APP web --port 8080
+# 也可直接启动：
+# ./install/bin/face_db_web --port 8080 \
+#     --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces \
+#     --detection-model "$PWD/models/det_10g.onnx" \
+#     --recognition-model "$PWD/models/w600k_r50.onnx"
+
+# 5. 浏览器打开 http://localhost:8080/
+#    在 “Add Face” 表单里传图录入：
+#      · Name 必填，可另填 Title / Scene / Map Location
+#      · “Or Upload” 选本地照片（也可在 “Image URL” 填图片链接）
+#      · 点 “Add Face”，提示 Face added with embedding 即为成功
+#      · 下方 “Face List” 会实时出现该人及其缩略图
+
+# 6. 另开一个终端，启动实时识别（默认 USB 摄像头 /dev/video0）
+$APP run --source 0
 ```
+
+> **接了多个摄像头 / 需要指定分辨率帧率时**，先列出本机设备再按编号选择：
+>
+> ```bash
+> $APP cameras                                          # 编号 / 设备名 / 当前采集模式
+> $APP run --camera 0 --width 1280 --height 720 --fps 30
+> ```
+>
+> `--camera` 会用 `/dev/video*` 校验，写错立即报错并提示可用编号；
+> 720p 以上会自动协商 MJPG，避免未经压缩的 YUYV 掉到个位数帧率。
+
+> Web 端录入时**已完成人脸检测与特征提取**，`embedding` 随记录一起写入数据库，
+> 因此录入完直接打开实时识别即可，无需再做任何额外操作。
+>
+> 若录入时提示 `Refused: no embedding could be extracted`，说明 Web 服务没找到模型：
+> 在项目根目录启动，或按上面注释显式传 `--detection-model` / `--recognition-model`。
+>
+> **需要给同一个人补一枪**（例如补一张不戴眼镜的照片，提高召回）时用 CLI：
+> `$APP list` 取到 id，再 `$APP add-template --id <uuid> --image <照片>`
+> —— 详见 [模块快速开始](./docs/module/quick_start.md) 与
+> [standalone 使用文档](./docs/module/standalone.md)。
+
+其他构建目标：`./build.sh CORE` / `ROS2` / `ROS1` / `WEB` / `ALL` / `CLEAN`。
+ROS2 启动：`source scripts/setup_env.sh && ros2 launch face_recognition_ros2 usb_cam_face.launch.py`。
+
+> **升级过版本 / 更换过模型时**，库内旧特征与当前取脸前端可能不在同一特征空间，
+> 需要重建一次：`$APP backfill --all`（直接用存档缩略图重算，不必重新传图）。
+
+### 🧪 4. 功能验证（可选）
+
+项目当前**没有独立的单元测试工程**，端到端验证以"**Web 录入 → 实时识别**"这条通路为主：
+
+```bash
+# ① 在 Web 页面用自己的照片录入一条记录（Name 填你的名字）
+# ② 启动实时识别，正对摄像头：画面上应显示你的名字与相似度
+$APP run --source 0
+
+# ③ 换一个人（或戴上面具 / 转到侧脸）确认不会被误认成你
+```
+
+需要**量化判定的中间分数**时，再用 CLI 的 `verify` 逐张打分（它会打印排名、
+原始相似度、队列统计与拒绝原因）：
+
+```bash
+$APP verify --image /path/to/your_photo.jpg        # 本人：应 ACCEPT
+$APP verify --image /path/to/other_person.jpg      # 他人：应 REJECT
+
+# 批量校验（适合回归验证）
+for f in ./test_image/*.png; do
+  printf '%-24s ' "$f"
+  $APP verify --image "$f" | grep -E 'raw similarity|decision' | tr '\n' ' '
+  echo
+done
+```
+
+判读要点：**同一人的分数应明显高于其他人，且其他人的分数应落在低位区间
+（接近 0 或负值）。若两者区间重叠，属于特征 / 取脸前端问题，调阈值无效**——
+参见 [常见问题排查](./docs/FAQ/troubleshooting.md)。
 
 ### 📄 5. 协议/配置文档 [[Doc](docs/protocol/)]
 
-覆盖 ROS Topic / Service / Message 定义、人脸库 HTTP API 与 MJPEG 推流接口、
-SQLite 数据库 schema 与数据字典、全项目配置项与默认路径约定。
+覆盖 ROS Topic / Service / Message、Web HTTP API 与 MJPEG 推流接口、SQLite 表结构与数据字典
+（512 维 embedding 的二进制布局、`id` / `name` 等字段语义）、全项目配置项与默认值。
 
 详见 [协议/配置文档](./docs/protocol/)。
 
 ### 📦 6. 正式发布 [[Doc](docs/release_guide.md)]
 
-采用语义化版本 `MAJOR.MINOR.PATCH`，版本号同步维护于各 `package.xml` 与
-`face_recognition_core/CMakeLists.txt`（含 `SOVERSION`）；发布前需完成
-`./build.sh CLEAN` 后全量构建、离线功能验证与 vendored 依赖校验。
+说明版本号规则、发布分支与流程、发布前检查清单、Release Notes 模板。
 
 ```bash
-# 基础发布命令示例
-git checkout main
-git pull --rebase
-# 修改各 package.xml / CMakeLists.txt 中的版本号后提交
-git commit -am "chore(release): bump version to v1.0.0"
-git tag -a v1.0.0 -m "Face Recognition Node v1.0.0"
-git push origin main
-git push origin v1.0.0
+# 基础发布命令示例（本仓库未内置发布脚本，按文档流程执行）
+git checkout master
+git pull
+# 修改版本配置文件后打标签
+git tag -a vX.Y.Z -m "release vX.Y.Z"
 ```
 
 详见 [发布指南](./docs/release_guide.md)。
@@ -171,62 +187,43 @@ git push origin v1.0.0
 ```
 face_recognition/
 ├── build.sh                        # 一键构建入口（MODELS/CORE/ROS1/ROS2/STANDALONE/WEB/ALL/CLEAN）
-├── README.md
-├── models/                         # ONNX 模型权重（./build.sh MODELS 下载）
-├── data/                           # 本地人脸库数据（SQLite 库 + 缩略图）
-├── docs/                           # 全量项目文档
-│   ├── setup.md                    # 开发环境搭建
-│   ├── architecture.md             # 架构说明
-│   ├── protocol/                   # 协议、接口、通信文档
-│   ├── services/                   # 核心业务模块文档
-│   ├── peripheral/                 # 外设、依赖适配文档
-│   ├── module/                     # 专项模块文档
+├── models/                         # ONNX 模型（检测/识别/备用），见 models/README.md
+├── config/                         # 全局配置与参数
+├── docs/                           # 全量项目文档（入口 docs/README.md）
+│   ├── setup.md                    # 开发环境搭建与首次跑通
+│   ├── architecture.md             # 分层、数据流、存储模型、关键设计决策
+│   ├── release_guide.md            # 版本与发布流程
+│   ├── protocol/                   # 接口、协议、数据库 schema、配置项
+│   ├── services/                   # 核心算法模块（检测 / 识别 / 人脸库）
+│   ├── module/                     # 专项模块（core / standalone / ros1 / ros2 / web）
+│   ├── peripheral/                 # 第三方依赖与平台适配
 │   ├── FAQ/                        # 常见问题排查
-│   ├── img/                        # 文档与 README 图片资源
-│   └── release_guide.md            # 发布指南
-├── scripts/                        # 编译、部署、发布、辅助脚本
-│   ├── download_models.py          # 模型下载
-│   ├── setup_env.sh                # 注入 vendored 库 + ROS 环境
-│   └── fix_retinaface_onnx.py      # 模型修复工具
+│   └── img/                        # 文档与 README 使用的图片资源
 ├── src/
-│   ├── face_recognition_core/      # 核心底层算法库（检测/识别/人脸库）
-│   ├── face_recognition_ros2/      # ROS2 节点 + viewer + MJPEG 推流
-│   ├── face_recognition_ros2_interfaces/  # ROS2 msg/srv 定义
-│   ├── face_recognition_ros1/      # ROS1（Noetic）节点
-│   ├── face_recognition_ros1_interfaces/  # ROS1 msg/srv 定义
-│   ├── face_recognition_standalone/ # 非 ROS 实时识别 CLI（零 ROS 依赖）
-│   └── face_db_web/                # Web 人脸库管理后台
-├── third_party/                    # 第三方依赖、SDK、开源库（vendoring）
-│   ├── sqlite3/                    # SQLite amalgamation（R-Tree/GEOPOLY）
-│   ├── spatialite/                 # SpatiaLite（可选，默认关闭）
-│   └── libmicrohttpd/              # libmicrohttpd（可选，默认用系统包）
-└── install/                        # colcon / cmake 安装产物
-    ├── bin/                        # face_db_web 等可执行文件
-    └── vendored/                   # 项目内第三方库安装前缀
+│   ├── face_recognition_core/      # 核心算法库：FaceDetector / FaceRecognizer / FaceDatabase
+│   │   ├── include/face_recognition_core/
+│   │   │   ├── types.hpp           # 数据类型 + compute_similarity
+│   │   │   ├── face_detector.hpp
+│   │   │   ├── face_recognizer.hpp
+│   │   │   └── face_database.hpp
+│   │   └── src/
+│   ├── face_recognition_standalone/# 零 ROS 依赖的实时识别 CLI
+│   │   ├── include/face_recognition_standalone/
+│   │   ├── src/                    # main / cli / recognition_pipeline / video_source
+│   │   └── build/face_recognition_app
+│   ├── face_recognition_ros2/      # ROS2 节点（node / viewer / face_stream_server）
+│   ├── face_recognition_ros2_interfaces/   # ROS2 msg / srv
+│   ├── face_recognition_ros1/      # ROS1 节点
+│   ├── face_recognition_ros1_interfaces/   # ROS1 msg / srv
+│   └── face_db_web/                # Web 人脸库后台（HTTP + 页面）
+├── scripts/                        # setup_env.sh / download_models.py 等辅助脚本
+├── third_party/                    # vendored 依赖（sqlite3 / spatialite / libmicrohttpd）
+└── install/                        # 构建安装产物（core 库、vendored 依赖、Web 可执行）
 ```
 
 ## 许可证
 
-本项目采用 **MIT 许可证**（见各 `package.xml` 的 `<license>MIT</license>`）。
-
-第三方组件遵循各自原始许可，使用时请一并遵守：
-
-| 组件 | 许可 |
-|---|---|
-| SQLite3（amalgamation） | Public Domain |
-| SpatiaLite（可选项） | MPL 1.1 / GPL 2.0 / LGPL 2.1 三选一 |
-| libmicrohttpd | LGPL 2.1+ |
-| OpenCV | Apache-2.0 |
-| ONNX Runtime | MIT |
-| ROS1 / ROS2 | Apache-2.0 / BSD |
-
-模型权重版权归原作者所有：检测与识别模型来自
-[deepinsight/insightface](https://github.com/deepinsight/insightface)，
-通用检测模型来自 [ultralytics/ultralytics](https://github.com/ultralytics/ultralytics)，
-仅供研究与非商业用途，商用请自行确认授权。
-
-## 参考
-
-- [heyouzen/ros2-face-recognition](https://github.com/heyouzen/ros2-face-recognition)
-- [deepinsight/insightface](https://github.com/deepinsight/insightface)
-- [ultralytics/ultralytics](https://github.com/ultralytics/ultralytics)
+本项目为公司内部自研项目，**仅限内部使用**。未经授权不得对外分发、公开或用于商业转售。
+第三方依赖遵循其各自的开源许可：SQLite3（Public Domain）、OpenCV（Apache-2.0）、
+ONNX Runtime（MIT）、libmicrohttpd（LGPL-2.1）、InsightFace 系列模型权重
+（仅供研究用途，商用请自行确认许可）。

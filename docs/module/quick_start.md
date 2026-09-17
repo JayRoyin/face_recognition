@@ -70,17 +70,22 @@ FaceDatabase   database;   database.initialize("/tmp/face_db/faces.db", "/tmp/fa
 
 APP=./src/face_recognition_standalone/build/face_recognition_app
 
-# ① 录入人脸
-$APP add --image ~/photos/alice.jpg --name "张三" --title "工程师" --scene office
-
-# ② 查看库
-$APP list
-
-# ③ 实时识别（默认 USB 摄像头 /dev/video0）
+# ① 实时识别（默认 USB 摄像头 /dev/video0）
 $APP run --source 0 --input-size 320
 ```
 
-按 `q` / `ESC` 退出。详见 [standalone.md](standalone.md)。
+按 `q` / `ESC` 退出。
+
+**人脸从哪里来？** 推荐用 Web 后台传图录入（见 [第 6 节](#6-web-人脸库后台face_db_web)），
+录入完成后再执行上面的 `run` 即可；CLI 的 `add` / `add-bulk` / `add-template`
+适合批量与脚本化场景：
+
+```bash
+$APP add --image ~/photos/alice.jpg --name "张三" --title "工程师" --scene office
+$APP list
+```
+
+详见 [standalone.md](standalone.md) 与 [web.md](web.md)。
 
 ---
 
@@ -149,13 +154,16 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 ./build.sh WEB
 ./build.sh STANDALONE
 
-# 终端 A：Web 录入（自动提取 embedding）
-./install/bin/face_db_web --port 8080 \
-    --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces \
-    --detection-model "$PWD/models/det_10g.onnx" \
-    --recognition-model "$PWD/models/w600k_r50.onnx"
+# 终端 A：启动 Web 录入（录入时即完成检测 + 提特征）
+./src/face_recognition_standalone/build/face_recognition_app web --port 8080
 
-# 终端 B：实时识别（与 Web 共享 DB）
+# 浏览器打开 http://localhost:8080/ ，在 “Add Face” 表单传图：
+#   · Name 必填（可另填 Title / Scene / Map Location）
+#   · “Or Upload” 选本地照片，或在 “Image URL” 填图片链接
+#   · 点 “Add Face” → 提示 Face added with embedding
+#   · 下方 Face List 实时显示已录人脸
+
+# 终端 B：实时识别（与 Web 共享同一个 DB，录完即可识别）
 ./src/face_recognition_standalone/build/face_recognition_app run --source 0 --input-size 320
 ```
 
@@ -163,12 +171,23 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 > 无需再手动传。若画面一直显示 `Unknown`，见
 > [../FAQ/troubleshooting.md](../FAQ/troubleshooting.md) 的 Q17。
 
-若 Web 启动时未加载识别模型（`emb=NO`），执行一次补全：
+**同一个人要补多张照片**（例如不戴眼镜 / 侧脸，提高召回）时用 CLI 的
+`add-template`（Web 页面目前只提供新增 / 删除 / 清空）：
 
 ```bash
-./src/face_recognition_standalone/build/face_recognition_app backfill
+APP=./src/face_recognition_standalone/build/face_recognition_app
+$APP list                                                    # 取到 <face_id>
+$APP add-template --id <face_id> --image ~/photos/alice2.jpg  # 补一枪
+$APP list                                                    # templates 变成 2
+```
+
+若历史上出现过 `emb=NO` 的记录（例如早期 Web 端未加载识别模型），补全一次：
+
+```bash
+$APP backfill          # 只补 embedding 为空的记录
+$APP backfill --all    # 强制重算全部（换过前端 / 模型后用）
 # 或在 run 时自动补全
-./src/face_recognition_standalone/build/face_recognition_app run --source 0 --auto-backfill
+$APP run --source 0 --auto-backfill
 ```
 
 ---

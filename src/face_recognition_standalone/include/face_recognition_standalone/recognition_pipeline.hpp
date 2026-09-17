@@ -20,25 +20,62 @@ struct PipelineConfig {
     std::string recognition_model;
     std::string db_path;
     std::string faces_dir;
+
     float detection_threshold = 0.5f;
-    // Recognition similarity threshold.
-    // Measured with this project's own models (det_10g + w600k_r50):
-    //   same identity, different photos ....... 0.50 ~ 0.76
-    //   same identity, camera-like degradation  0.62 ~ 0.69 (640x480 + JPEG)
-    //   different identity (impostor) ......... <= 0.40
-    // 0.5 keeps genuine pairs while tolerating downscale / JPEG / non-frontal
-    // pose. The previous default of 0.7 rejected every degraded genuine match.
+    // Recognition similarity threshold (raw cosine).
+    // Measured with this project's own models:
+    //   same identity, different photos ....... 0.68 ~ 0.70
+    //   different identity (impostor) ......... 0.21 ~ 0.32
     float recognition_threshold = 0.5f;
     float nms_threshold = 0.5f;
     int input_size = 640;
     int max_faces = 10;
-    // Detect every N frames. Skipped frames reuse the cached bboxes while
-    // recognition still runs, so this halves the detector cost (the dominant
-    // bottleneck on CPU) without hurting detection quality.
+    // Detect every N frames; skipped frames reuse the cached bboxes while
+    // recognition still runs. 2 halves the detector cost (the dominant CPU
+    // bottleneck) without hurting detection quality.
     int detect_every_n_frames = 2;
-    int downscale_max_side = 0;      // 0 = no downscale; >0 = resize frame so
-                                     //     its longest side ≤ this before detect
+    int downscale_max_side = 0;      // 0 = no downscale before detection
     bool run_recognition = true;     // false = detection-only mode
+
+    // ---- quality gate ----------------------------------------------------
+    // Faces whose bounding box is smaller than this (short side, pixels) are
+    // detected and drawn but NOT identified. A small crop has to be upsampled
+    // into the 112x112 network input, which destroys identity detail and
+    // produces embeddings that behave like "hubs" — they match many different
+    // people. This is the main source of false accepts on distant faces.
+    int min_face_size = 80;
+
+    // ---- alignment (ON by default) ---------------------------------------
+    // Warp the face onto the canonical 112x112 ArcFace template using the
+    // detector's 5 landmarks.
+    //
+    // Earlier revisions kept this off because the 5 landmarks were decoded with
+    // the RetinaFace variance/anchor convention instead of the SCRFD one,
+    // which squeezed them to ~0.4x of their true spread. That made the
+    // similarity transform zoom into the eyes/nose, and alignment measured
+    // *worse* than a crop. The decoder is fixed, so alignment is now the
+    // accurate front-end.
+    //
+    // Measured with this project's models (input 640), gallery = enrolled
+    // selfie, queries = one real ID photo of the same person + several
+    // different people:
+    //     aligned   : genuine 0.68  |  best impostor 0.20
+    //     bbox-crop : genuine 0.64  |  best impostor 0.73   <-- unusable
+    //
+    // NEVER mix the two front-ends inside one gallery — re-enrol (or run
+    // `backfill --force`) after toggling this flag.
+    bool align = true;
+    bool allow_unaligned = false;
+
+    // ---- cohort normalisation -------------------------------------------
+    // Gate the raw cosine by a z-score against unrelated identities. A
+    // template that matches everybody (a "hub", usually a blurry/low-quality
+    // enrolment) inflates the cohort statistics and therefore needs a
+    // proportionally higher score to be accepted.
+    bool  cohort_norm   = true;
+    float z_threshold   = 3.0f;
+    int   min_cohort    = 3;         // below this, fall back to the raw gate
+    std::string cohort_db;           // optional second DB of impostor faces
 };
 
 struct RecognizedFace {
@@ -46,8 +83,13 @@ struct RecognizedFace {
     std::string id;
     std::string name;
     std::string title;
-    float similarity = 0.0f;
-    bool recognized = false;
+    float similarity = 0.0f;         // raw cosine of the best template
+    float z_score = 0.0f;            // cohort z-score (valid when cohort_used)
+    float cohort_median = 0.0f;
+    int   cohort_size = 0;
+    bool  cohort_used = false;
+    bool  recognized = false;
+    std::string reason;              // populated when recognised == false
 };
 
 struct FrameStats {
@@ -59,6 +101,15 @@ struct FrameStats {
     double total_ms = 0.0;
 };
 
+/** Result of `verify`: the full ranking for one image. */
+struct VerifyReport {
+    bool ok = false;
+    std::string error;
+    int faces_detected = 0;
+    face_recognition::MatchResult decision;
+    std::vector<face_recognition::MatchCandidate> ranked;
+};
+
 class RecognitionPipeline {
 public:
     RecognitionPipeline();
@@ -66,16 +117,12 @@ public:
 
     bool initialize(const PipelineConfig& cfg, std::string& err);
 
-    /**
-     * Run detection+recognition on a frame. If `draw` is true, draws bounding
-     * boxes and labels onto `image` in place.
-     */
     std::vector<RecognizedFace> process(cv::Mat& image, FrameStats* stats = nullptr,
                                         bool draw = true);
 
     /**
-     * Convenience: register a face from an image file. Detects the largest
-     * face in the image, extracts the embedding and stores everything in DB.
+     * Register a face from an image file: detects the largest face, extracts
+     * the embedding and stores both identity and template.
      */
     std::string register_face_from_image(const std::string& image_path,
                                          const std::string& name,
@@ -84,16 +131,20 @@ public:
                                          const std::string& map_location = "unknown",
                                          std::string* err = nullptr);
 
+    /** Add an extra shot to an existing identity (multi-template). */
+    std::string add_template_from_image(const std::string& face_id,
+                                        const std::string& image_path,
+                                        std::string* err = nullptr);
+
+    /** Rank one image against the whole gallery, with cohort statistics. */
+    VerifyReport verify_image(const std::string& image_path);
+
     /**
-     * For each face in the DB whose embedding is empty but image_path exists,
-     * re-run detection+recognition on the stored image and write the
-     * embedding back. Returns how many faces were updated.
+     * Re-extract embeddings from the stored thumbnails.
      *
-     * The standalone equivalent of the backfill logic in the ROS2 node.
-     *
-     * @param force  re-extract EVERY record, even ones that already have an
-     *               embedding. Required after a change to the recognizer's
-     *               preprocessing, which invalidates all stored embeddings.
+     * @param force  also redo records that already have an embedding (required
+     *               after the recognizer front-end changes). Extra templates
+     *               are rebuilt from their own image_path as well.
      */
     int backfill_embeddings(int* total = nullptr, int* skipped = nullptr,
                             int* failed = nullptr, bool force = false);
@@ -113,6 +164,23 @@ private:
     bool ready_ = false;
     int frame_counter_ = 0;
     std::vector<face_recognition::FaceDetection> last_detections_;
+
+    /** Detect the single largest face in an image; empty on failure. */
+    bool detect_largest(const cv::Mat& image, face_recognition::FaceDetection& out,
+                        std::string& err);
+
+    /**
+     * Shared quality gate + embedding extraction used by BOTH the live loop
+     * and every enrolment path, so a gallery can never end up mixing
+     * front-ends (aligned vs bbox-crop) or containing tiny-face embeddings.
+     *
+     * @return false and fills `reason` with "too small" / "no landmarks" /
+     *         "no embedding" when the face must not be used.
+     */
+    bool prepare_embedding(const cv::Mat& image,
+                           const face_recognition::FaceDetection& det,
+                           std::vector<float>& embedding,
+                           std::string& reason);
 };
 
 void draw_results(cv::Mat& image, const std::vector<RecognizedFace>& faces);

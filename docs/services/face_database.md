@@ -18,6 +18,7 @@ class FaceDatabase {
 public:
     bool initialize(const std::string& db_path, const std::string& faces_dir);
 
+    // --- 身份 ---------------------------------------------------------------
     std::string add_face(const std::string& name,
                          const std::vector<float>& embedding,
                          const std::vector<uint8_t>& image_data = {},
@@ -28,12 +29,36 @@ public:
     bool remove_face(const std::string& face_id);
     std::shared_ptr<FaceRecord> get_face(const std::string& face_id);
     std::vector<FaceRecord>     list_faces();
-    std::shared_ptr<FaceRecord> find_matching_face(const std::vector<float>& embedding,
-                                                   float threshold = 0.7f);
-
     int  clear_all();
     int  get_face_count();
 
+    // --- 附加模板（multi-shot）---------------------------------------------
+    bool add_template(const std::string& face_id,
+                      const std::vector<float>& embedding,
+                      const std::string& image_path = "");
+    std::vector<FaceTemplate> list_templates(const std::string& face_id);
+    int  template_count(const std::string& face_id);
+    bool remove_templates(const std::string& face_id);
+
+    // --- 匹配 ---------------------------------------------------------------
+    std::vector<MatchCandidate> rank_faces(const std::vector<float>& embedding);
+
+    MatchResult match_face(const std::vector<float>& embedding,
+                           float raw_threshold,
+                           float z_threshold = 3.0f,
+                           int   min_cohort  = 3,
+                           bool  normalize   = true);
+
+    // 兼容旧调用（ROS 节点），内部走 rank_faces + 原始阈值
+    std::shared_ptr<FaceRecord> find_matching_face(const std::vector<float>& embedding,
+                                                   float threshold = 0.7f);
+
+    // --- 队列归一化 ---------------------------------------------------------
+    void setCohortEmbeddings(std::vector<std::vector<float>> cohort);
+    void setNormalizationDefaults(float z_threshold, int min_cohort, bool enabled);
+    int  cohortSize() const;
+
+    // --- 图片 / 特征 ---------------------------------------------------------
     bool save_image(const std::string& face_id,
                     const std::vector<uint8_t>& data,
                     std::string& out_path);
@@ -41,6 +66,10 @@ public:
                           const std::vector<float>& embedding);
 };
 ```
+
+> `find_matching_face` 的 `0.7f` 只是**函数签名里的历史默认值**，
+> 应用层（CLI / ROS 节点 / Web）都会显式传入自己的 `recognition_threshold`
+> （当前默认 `0.5`）。直接用 C++ API 时请显式传阈值。
 
 ---
 
@@ -56,6 +85,9 @@ database.initialize("/tmp/face_db/faces.db", "/tmp/face_db/faces");
 2. 递归创建 `db_path` 的父目录
 3. `sqlite3_open()` 打开（不存在则创建）
 4. `CREATE TABLE IF NOT EXISTS faces (...)`
+5. `CREATE TABLE IF NOT EXISTS face_templates (...)`
+   + `CREATE INDEX IF NOT EXISTS idx_face_templates_face_id`
+   （老库升级时自动补建，**无需手工迁移**）
 
 任一步失败返回 `false`（并打印 `Cannot open database: <errmsg>`）。
 
@@ -80,24 +112,117 @@ database.initialize("/tmp/face_db/faces.db", "/tmp/face_db/faces");
 
 ---
 
-## 4. find_matching_face —— 1:N 检索
+## 4. rank_faces / match_face —— 1:N 检索与归一化
+
+### 4.1 多模板（multi-shot）
+
+一个人的外观会变（**戴/不戴眼镜**、姿态、光照）。只存一个 embedding 时，整个身份
+就是特征空间里的**一个点**，任何外观变化都会让查询点跑偏——这正是"戴眼镜才能识别、
+摘眼镜就认不出"的根因。
+
+因此除 `faces.embedding`（主模板）外，新增 `face_templates` 表存**任意多个额外模板**：
+
+```sql
+CREATE TABLE IF NOT EXISTS face_templates (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    face_id TEXT NOT NULL,       -- -> faces.id
+    embedding BLOB,
+    image_path TEXT,             -- 该模板来源图，供 backfill --all 重建
+    created_at INTEGER
+);
+```
 
 ```cpp
-auto match = database.find_matching_face(embedding, 0.7f);
+database.add_template(face_id, embedding, image_path);   // 加一"枪"
+database.list_templates(face_id);
+database.template_count(face_id);                        // 不含主模板
 ```
 
-算法：全表扫描，对每条记录计算 `compute_similarity`（内积，双方均已 L2 归一化），
-保留**严格大于阈值**的最大者。
+`face_recognition_app add-template --id <face_id> --image <照片>` 是它的 CLI 入口。
+**推荐做法：同一个人的"戴眼镜"和"不戴眼镜"各存一张。**
+
+### 4.2 rank_faces —— 排序
+
+对查询向量，与**所有身份的所有模板**求余弦，每个身份取最高分，按分数降序返回：
+
+```cpp
+struct MatchCandidate {
+    std::string face_id, name, title;
+    float similarity;      // 该身份的最佳模板得分
+    long long template_id; // -1 表示主模板
+    int template_count;
+};
+std::vector<MatchCandidate> rank_faces(const std::vector<float>& embedding);
+```
+
+复杂度 O(N × T)，全内存暴力扫描；数千模板量级完全够用。
+
+### 4.3 match_face —— 判定（含队列归一化）
+
+```cpp
+MatchResult match_face(const std::vector<float>& embedding,
+                       float raw_threshold,
+                       float z_threshold = 3.0f,
+                       int   min_cohort  = 3,
+                       bool  normalize   = true);
+```
+
+判定分两级：
 
 ```
-best_sim = threshold
-for record in all:
-    sim = dot(query, record.embedding)
-    if sim > best_sim: best_sim, best_match = sim, record
-return best_match      // 无命中返回 nullptr
+1) 原始门限：  raw_similarity  >= raw_threshold           （否则 REJECT）
+2) 队列门限：  z_score         >= z_threshold             （队列足够大时）
 ```
 
-**复杂度** O(N)。当前实现未使用向量索引；人脸库规模在数千条以内时完全可用。
+`z_score` 的定义：
+
+```
+cohort   = 其它身份的模板得分（每个身份取最佳）+ 外部冒充者队列
+median   = median(cohort)
+mad      = median(|cohort - median|)            # 稳健尺度
+z_score  = (raw_similarity - median) / (1.4826 * mad)
+```
+
+**为什么需要它**：低质量模板（模糊、低分辨率、反光）容易成为**枢纽点（hub）**——
+它对**所有**人都给出偏高的相似度，于是"是个人都能识别"。队列归一化把判定从
+"绝对分数"变成"相对于这张查询对**无关系的人**有多高分"：枢纽模板会把 `median`
+一起抬高，因此它必须给出**高得多的分数**才能通过。这也是说话人识别里
+Z-norm / T-norm 的同一思路。
+
+**队列来源与回退**：
+
+| 情况 | 行为 |
+|---|---|
+| 库里有 ≥2 个身份 | 队列 = 其它身份的最佳模板得分 |
+| 配置了 `--cohort-db <另一个库>` | 队列额外并入该库的全部模板 |
+| 队列样本数 < `min_cohort`（默认 3） | **跳过归一化，退化为纯原始门限**（`normalized=false`） |
+| 库为空 / 全部模板为空 | `accepted=false`，`reason="gallery empty"` |
+
+> ⚠️ 单身份库 + 无外部队列时**归一化不生效**（队列为空），此时系统行为与旧版
+> 完全一致。要让归一化生效，请至少再录入 1~2 个人，或准备一个冒充者库：
+>
+> ```bash
+> # 用任意人脸图片目录建一个冒充者库（只用于归一化，不参与识别）
+> APP=./src/face_recognition_standalone/build/face_recognition_app
+> $APP add-bulk --dir ./other_faces --db /tmp/face_db/cohort.db
+> # 之后运行识别时挂上它
+> $APP run --source 0 --cohort-db /tmp/face_db/cohort.db
+> ```
+
+### 4.4 find_matching_face —— 兼容封装
+
+```cpp
+std::shared_ptr<FaceRecord> find_matching_face(const std::vector<float>& embedding,
+                                               float threshold = 0.7f);
+```
+
+内部走 `match_face()`（沿用 `setNormalizationDefaults()` 设置的默认参数），
+供 ROS1 / ROS2 节点直接调用。返回 `nullptr` 表示拒绝。
+
+> 签名里的 `0.7f` 是历史默认值；应用层都会显式传自己的阈值（当前默认 `0.5`）。
+
+> **匹配单元是模板而不是身份**：`rank_faces()` 返回的每个身份分数已经是该身份
+> **所有模板的最高分**，因此调用方不需要自己遍历模板（详见 §4.1 / §4.2）。
 
 ---
 
@@ -109,7 +234,9 @@ return best_match      // 无命中返回 nullptr
 | `clear_all()` | 遍历全部记录，逐条删文件 + 删行 | 删除条数 `int` |
 
 **注意**：删除文件与删行**不在同一事务内**。若删行失败，文件已被删除，属于
-已知的遗留项（见 `docs/TODO.md` 中"完善删除失败回滚与孤立文件清理"）。
+已知遗留项，按
+[../protocol/database_schema.md §5 一致性与维护](../protocol/database_schema.md#5-一致性与维护)
+手工清理孤立文件即可。
 
 ---
 
@@ -145,11 +272,18 @@ faces_dir/
 └── ...
 
 db_path (SQLite)
-└── table: faces
-      id            ←→  文件名（去掉 .jpg）
-      embedding     BLOB(512 × float32 = 2048B)
-      image_path    →    缩略图绝对路径
+├── table: faces              # 一个身份一行
+│     id            ←→  文件名（去掉 .jpg）
+│     embedding     BLOB(512 × float32 = 2048B)   # 主模板
+│     image_path    →    缩略图绝对路径
+└── table: face_templates     # 同一身份的附加模板，一枪一行
+      face_id       →    faces.id
+      embedding     BLOB(512 × float32 = 2048B)   # 同维度、同特征空间
+      image_path    →    该枪的来源图（供 backfill --all 重建）
 ```
+
+> 附加模板的图片文件名形如 `<id>_t1.jpg`、`<id>_t2.jpg`，与主缩略图
+> `<id>.jpg` 并列存放在同一个 `faces_dir` 下。
 
 字段完整定义见 [../protocol/database_schema.md](../protocol/database_schema.md)。
 
@@ -180,8 +314,13 @@ db.initialize("/tmp/face_db/faces.db", "/tmp/face_db/faces");
 std::vector<uint8_t> jpeg = /* ... */;
 std::string id = db.add_face("张三", embedding, jpeg, "工程师", "office", "5F-A区");
 
-// 检索
-auto match = db.find_matching_face(embedding, 0.7f);
+// 追加一枪（同一人的另一张照片）
+db.add_template(id, embedding_from_another_photo, stored_path);
+
+// 检索：排名 + 完整判定（含队列归一化）
+auto ranked = db.rank_faces(embedding);
+auto result = db.match_face(embedding, /*raw_threshold=*/0.5f);
+if (result.accepted) { /* 命中 result 对应的身份 */ }
 
 // 回填
 db.update_embedding(id, embedding);

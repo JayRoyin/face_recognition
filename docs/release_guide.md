@@ -175,8 +175,10 @@ git push origin :refs/tags/v1.0.0    # 删除远端标签（谨慎）
 3. `source scripts/setup_env.sh && sqlite3 :memory: "PRAGMA compile_options;" | grep -i rtree`（vendored 依赖门禁）
 4. 打标签后自动生成 Release Notes（列出 `MAJOR/MINOR/PATCH` 变更分类）
 
-已知待办项（历史遗留）见 `docs/TODO.md`，例如
-"修复构建脚本 ALL 部分失败仍报告成功"、"增加核心、ROS、Web 自动化回归测试"。
+已知待办项（历史遗留）：`./build.sh ALL` 在部分子目标失败时仍可能报告整体成功；
+核心算法、ROS 节点与 Web 后台目前**没有自动化回归测试**。发版前请手动走完本文件
+的检查清单，并覆盖 [FAQ/troubleshooting.md §四](FAQ/troubleshooting.md#四离线功能验证)
+的离线验证路径。
 
 ---
 

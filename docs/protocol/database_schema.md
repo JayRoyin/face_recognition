@@ -23,7 +23,22 @@ CREATE TABLE IF NOT EXISTS faces (
     created_at   INTEGER,
     updated_at   INTEGER
 );
+
+-- 额外模板（multi-shot）：一个人可以有任意多"枪"
+CREATE TABLE IF NOT EXISTS face_templates (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    face_id    TEXT NOT NULL,   -- -> faces.id
+    embedding  BLOB,            -- 与 faces.embedding 同维度、同空间
+    image_path TEXT,            -- 该模板的来源图，供 backfill --all 重建
+    created_at INTEGER
+);
+CREATE INDEX IF NOT EXISTS idx_face_templates_face_id
+    ON face_templates(face_id);
 ```
+
+> `faces.embedding` 是**主模板**（等价于第 0 枪），额外模板放在 `face_templates`。
+> 匹配时取一个身份下所有模板的最高分，因此一个人的模板数 = `1 + COUNT(face_templates)`。
+> 老库升级时该表由 `initialize()` 自动创建，**无需手工迁移**。
 
 ---
 
@@ -119,7 +134,7 @@ sqlite3 "$DB" "DELETE FROM faces WHERE id = '<UUID>';"
 | 手工 `DELETE` 后图片残留 | 磁盘占用 | 手工删除 `faces/<id>.jpg` |
 
 **已知限制**：`remove_face` 与 `clear_all` 的"删文件"和"删行"不在同一事务内，
-失败时可能留下孤立文件（见 `docs/TODO.md`）。
+失败时可能留下孤立文件。按上表手工清理即可。
 
 ---
 
@@ -143,8 +158,13 @@ sqlite3 "$DB" "DELETE FROM faces WHERE id = '<UUID>';"
 |---|---|
 | 新增可空列 | 旧二进制可继续运行（未使用新列） |
 | 修改 `embedding` 维度 | **不兼容**，库内旧特征无法匹配，需重新入库 |
-| 修改模型 | 需**清空并重建**人脸库，ArcFace 特征空间不通用 |
+| 修改识别模型 | 需**清空并重建**人脸库，ArcFace 特征空间不通用 |
+| 更换识别前端（对齐 ↔ bbox 裁剪） | **不兼容**，两个前端不在同一特征子空间；执行 `backfill --all` 用存档缩略图重建 |
 | 更换 SQLite 版本 | 兼容（vendored 与系统库读写同一文件格式） |
+
+> 判断"库里存的到底是不是当前前端的特征"没有标记字段，只能靠**最后一次
+> `backfill --all` 的时间**与代码/参数的变更时间对照。任何影响取脸的改动
+> （前端、检测框解码、关键点解码）都必须重跑 `backfill --all`。
 
 ---
 

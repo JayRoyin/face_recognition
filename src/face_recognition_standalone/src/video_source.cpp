@@ -1,10 +1,14 @@
 #include "face_recognition_standalone/video_source.hpp"
 
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/core/utils/logger.hpp>
 #include <filesystem>
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
+#include <fstream>
 #include <iostream>
+#include <vector>
 
 namespace face_recognition_standalone {
 
@@ -43,6 +47,47 @@ bool looks_like_video_path(const std::string& p) {
 bool looks_like_dir(const std::string& p) {
     namespace fs = std::filesystem;
     return fs::exists(p) && fs::is_directory(p);
+}
+
+bool all_digits(const std::string& s) {
+    return !s.empty() &&
+           std::all_of(s.begin(), s.end(),
+                       [](unsigned char c) { return std::isdigit(c); });
+}
+
+/** "0" / "video2" / "/dev/video2" -> 2 ; returns -1 when not an index form. */
+int video_index_from_string(const std::string& s) {
+    if (all_digits(s)) return std::stoi(s);
+    const std::string prefix = "/dev/video";
+    if (s.rfind(prefix, 0) == 0 && all_digits(s.substr(prefix.size())))
+        return std::stoi(s.substr(prefix.size()));
+    if (s.rfind("video", 0) == 0 && all_digits(s.substr(5)))
+        return std::stoi(s.substr(5));
+    return -1;
+}
+
+std::string fourcc_to_string(double v) {
+    const int code = static_cast<int>(v);
+    if (code <= 0) return {};
+    std::string s(4, '\0');
+    for (int i = 0; i < 4; ++i)
+        s[i] = static_cast<char>((code >> (8 * i)) & 0xFF);
+    // Trim the padding V4L2 puts in for unused bytes.
+    while (!s.empty() && (s.back() == '\0' || s.back() == ' ')) s.pop_back();
+    return s;
+}
+
+int fourcc_from_string(const std::string& s) {
+    if (s.size() != 4) return 0;
+    return cv::VideoWriter::fourcc(s[0], s[1], s[2], s[3]);
+}
+
+/** Human-readable device name from sysfs ("HD Webcam: HD Webcam"). */
+std::string read_sysfs_name(int index) {
+    std::ifstream f("/sys/class/video4linux/video" + std::to_string(index) + "/name");
+    std::string line;
+    if (f && std::getline(f, line)) return line;
+    return {};
 }
 
 }  // namespace
@@ -115,6 +160,26 @@ bool VideoSource::open(const SourceConfig& cfg, std::string& err) {
     }
 
     if (cap_.isOpened()) {
+        if (cfg_.type == SourceType::USB_CAMERA) {
+            // The pixel format has to be negotiated BEFORE width/height: V4L2
+            // then picks a mode that satisfies the format.
+            //
+            // Uncompressed (YUYV) frames above ~640x480 exceed USB2 bandwidth
+            // and make the camera fall back to a very low frame rate
+            // (observed: 1280x720 at 10 fps). MJPG is compressed inside the
+            // camera and keeps 720p/1080p at 30 fps.
+            //
+            // `--fourcc` overrides the heuristic — some cameras only expose
+            // YUYV, some only expose MJPG above 480p.
+            const int requested = fourcc_from_string(cfg_.fourcc);
+            if (requested != 0) {
+                cap_.set(cv::CAP_PROP_FOURCC, requested);
+            } else if (cfg_.width >= 1280 || cfg_.height >= 720) {
+                cap_.set(cv::CAP_PROP_FOURCC,
+                         cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+            }
+        }
+
         if (cfg_.width > 0)  cap_.set(cv::CAP_PROP_FRAME_WIDTH,  cfg_.width);
         if (cfg_.height > 0) cap_.set(cv::CAP_PROP_FRAME_HEIGHT, cfg_.height);
         if (cfg_.fps > 0)    cap_.set(cv::CAP_PROP_FPS,          cfg_.fps);
@@ -131,6 +196,20 @@ bool VideoSource::open(const SourceConfig& cfg, std::string& err) {
                           << cfg_.height << ", using " << static_cast<int>(got_w) << "x"
                           << static_cast<int>(got_h)
                           << " (override with --width/--height, 0 = camera default)\n";
+            }
+        }
+
+        // Same story for the frame rate: a 1080p YUYV mode can only do a
+        // fraction of the requested fps, and silently running at 5 fps looks
+        // like a recognition problem rather than a capture-mode problem.
+        if (cfg_.type == SourceType::USB_CAMERA && cfg_.fps > 0) {
+            const double got_fps = cap_.get(cv::CAP_PROP_FPS);
+            if (got_fps > 0 && got_fps + 0.5 < cfg_.fps * 0.6) {
+                std::cerr << "[WARN] camera delivers "
+                          << static_cast<int>(got_fps + 0.5)
+                          << " fps instead of the requested " << cfg_.fps
+                          << " fps -- try --fourcc MJPG, or a smaller "
+                             "--width/--height\n";
             }
         }
     }
@@ -170,6 +249,11 @@ double VideoSource::fps() const {
         return 0.0;
     }
     return cap_.get(cv::CAP_PROP_FPS);
+}
+
+std::string VideoSource::fourcc() const {
+    if (cfg_.type != SourceType::USB_CAMERA || !cap_.isOpened()) return {};
+    return fourcc_to_string(cap_.get(cv::CAP_PROP_FOURCC));
 }
 
 bool VideoSource::read(cv::Mat& frame) {
@@ -233,6 +317,117 @@ bool VideoSource::read(cv::Mat& frame) {
 }
 
 // -----------------------------------------------------------------------------
+// Camera discovery / selection.
+// -----------------------------------------------------------------------------
+bool normalize_camera_selector(const std::string& in, std::string& out, std::string& err) {
+    namespace fs = std::filesystem;
+    if (in.empty()) {
+        err = "empty camera selector";
+        return false;
+    }
+
+    const int idx = video_index_from_string(in);
+    if (idx >= 0) {
+        const std::string dev = "/dev/video" + std::to_string(idx);
+        std::error_code ec;
+        if (!fs::exists(dev, ec)) {
+            err = dev + " does not exist";
+            return false;
+        }
+        out = std::to_string(idx);   // index form keeps `open(index)` working
+        return true;
+    }
+
+    if (in.rfind("/dev/", 0) == 0) {
+        std::error_code ec;
+        if (!fs::exists(in, ec)) {
+            err = in + " does not exist";
+            return false;
+        }
+        out = in;
+        return true;
+    }
+
+    err = "unrecognised camera selector '" + in +
+          "' (expected an index like 0, or a device node like /dev/video2)";
+    return false;
+}
+
+std::vector<CameraInfo> enumerate_cameras(bool probe, int max_devices) {
+    namespace fs = std::filesystem;
+    std::vector<CameraInfo> out;
+
+    // Every UVC camera publishes auxiliary "metadata" nodes next to its capture
+    // node, and opening those makes OpenCV's V4L2 backend print
+    // "can't open camera by index" for each one. Failing to open is the
+    // *expected* outcome here and it is exactly how those nodes are told apart,
+    // so silence the backend while probing.
+    const auto prev_log_level = cv::utils::logging::getLogLevel();
+    cv::utils::logging::setLogLevel(cv::utils::logging::LOG_LEVEL_SILENT);
+
+    for (int i = 0; i < max_devices; ++i) {
+        const std::string dev = "/dev/video" + std::to_string(i);
+        std::error_code ec;
+        if (!fs::exists(dev, ec)) continue;
+
+        CameraInfo ci;
+        ci.index  = i;
+        ci.device = dev;
+        ci.name   = read_sysfs_name(i);
+
+        cv::VideoCapture cap;
+        if (cap.open(i, cv::CAP_V4L2)) {
+            cap.set(cv::CAP_PROP_FOURCC, cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+            ci.openable = true;
+            ci.width  = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_WIDTH));
+            ci.height = static_cast<int>(cap.get(cv::CAP_PROP_FRAME_HEIGHT));
+            ci.fps    = cap.get(cv::CAP_PROP_FPS);
+            ci.fourcc = fourcc_to_string(cap.get(cv::CAP_PROP_FOURCC));
+
+            if (probe) {
+                // A V4L2 device can only be held by one handle at a time, so the
+                // handle used above to read the current mode has to be released
+                // first — otherwise every probe open returns EBUSY and the probe
+                // silently reports nothing.
+                cap.release();
+
+                const int candidates[][2] = {
+                    {1920, 1080}, {1280, 720}, {640, 480}, {320, 240}};
+                for (const auto& c : candidates) {
+                    cv::VideoCapture p;
+                    if (!p.open(i, cv::CAP_V4L2)) continue;
+                    p.set(cv::CAP_PROP_FOURCC,
+                          cv::VideoWriter::fourcc('M', 'J', 'P', 'G'));
+                    p.set(cv::CAP_PROP_FRAME_WIDTH,  c[0]);
+                    p.set(cv::CAP_PROP_FRAME_HEIGHT, c[1]);
+                    p.set(cv::CAP_PROP_FPS, 30);
+
+                    const int    gw = static_cast<int>(p.get(cv::CAP_PROP_FRAME_WIDTH));
+                    const int    gh = static_cast<int>(p.get(cv::CAP_PROP_FRAME_HEIGHT));
+                    const double gf = p.get(cv::CAP_PROP_FPS);
+                    char want[32], got[64];
+                    std::snprintf(want, sizeof(want), "%dx%d@30", c[0], c[1]);
+                    std::snprintf(got, sizeof(got), "%dx%d@%.0f", gw, gh, gf);
+                    ci.probe_results.push_back(
+                        std::string(want) + "  ->  " + got +
+                        ((gw == c[0] && gh == c[1]) ? "" : "   (not supported, downgraded)"));
+                    p.release();
+                }
+                if (ci.probe_results.empty()) {
+                    ci.probe_results.push_back(
+                        "probe unavailable (device busy - another program may be using it)");
+                }
+            }
+        }
+        cap.release();
+        out.push_back(std::move(ci));
+    }
+
+    cv::utils::logging::setLogLevel(prev_log_level);
+    return out;
+}
+
+// -----------------------------------------------------------------------------
 // Helper used by CLI parsing.
 // -----------------------------------------------------------------------------
 SourceConfig infer_source_from_uri(const std::string& uri) {
@@ -267,6 +462,7 @@ SourceConfig infer_source_from_uri(const std::string& uri) {
             // (pass 0 to keep whatever the camera defaults to).
             cfg.width  = 1280;
             cfg.height = 720;
+            cfg.fps    = 30;
         } else {
             // Fall back: let VideoCapture try to open it.
             cfg.type = SourceType::FILE;

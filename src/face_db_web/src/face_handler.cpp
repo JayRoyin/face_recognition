@@ -26,10 +26,12 @@ static std::string jsonEscape(const std::string& value) {
 
 FaceHandler::FaceHandler(std::shared_ptr<face_recognition::FaceDatabase> database,
                          std::shared_ptr<face_recognition::FaceDetector>   detector,
-                         std::shared_ptr<face_recognition::FaceRecognizer> recognizer)
+                         std::shared_ptr<face_recognition::FaceRecognizer> recognizer,
+                         bool require_embedding)
     : database_(std::move(database)),
       detector_(std::move(detector)),
-      recognizer_(std::move(recognizer)) {
+      recognizer_(std::move(recognizer)),
+      require_embedding_(require_embedding) {
 
     if (const char* env_p = std::getenv("FACE_DB_WEB_TEMPLATES")) {
         templates_dir_ = env_p;
@@ -210,7 +212,8 @@ HttpResponse FaceHandler::addFace(const HttpRequest& req) {
             if (!decoded_img.empty()) {
                 auto detections = detector_->detect(decoded_img, 1);
                 if (!detections.empty()) {
-                    embedding = recognizer_->extract_embedding(decoded_img, detections.front().bbox);
+                    embedding = recognizer_->extract_embedding(
+                        decoded_img, detections.front().bbox, detections.front().landmarks);
                     if (embedding.empty()) {
                         std::cerr << "[FaceHandler] warning: embedding extraction returned empty for '" << name << "'\n";
                     }
@@ -220,6 +223,20 @@ HttpResponse FaceHandler::addFace(const HttpRequest& req) {
             } else {
                 std::cerr << "[FaceHandler] warning: failed to decode uploaded image for '" << name << "'\n";
             }
+        }
+
+        // Guard: a record without an embedding can never be matched by the
+        // recognizer, so refuse it unless the operator explicitly opted in.
+        if (embedding.empty() && require_embedding_) {
+            resp.status_code = 409;
+            resp.body =
+                "{\"success\":false,\"id\":\"\",\"has_embedding\":false,"
+                "\"message\":\"Refused: no embedding could be extracted (no face "
+                "detected in the image, or the detection/recognition models are not "
+                "loaded). Such a record could never be matched. Load the models or "
+                "start the server with --allow-no-embedding.\"}";
+            resp.content_type = "application/json; charset=utf-8";
+            return resp;
         }
 
         std::string id = database_->add_face(

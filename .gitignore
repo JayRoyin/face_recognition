@@ -24,9 +24,7 @@ htmlcov/
 venv/
 ENV/
 env/
-third_party/inspire_hand_ws/venv/
-third_party/inspire_hand_ws/venv_x86.tar.xz
-third_party/inspire_hand_ws/pyvenv.cfg
+third_party
 
 # ===== IDE / 编辑器 =====
 .idea/
@@ -36,6 +34,9 @@ third_party/inspire_hand_ws/pyvenv.cfg
 *~
 .project
 .settings/
+.codebuddy
+.codex
+.agents
 
 # ===== 操作系统 =====
 .DS_Store
@@ -56,6 +57,11 @@ data
 
 # ===== 模型文件 =====
 models/
+
+# ===== 上游参考实现（由 third_party/fetch_reference.sh 拉取，不参与构建）=====
+# 见 third_party/REFERENCE.md
+third_party/insightface/
+third_party/opencv_zoo/
 
 # ===== 测试 =====
 tests/__pycache__/

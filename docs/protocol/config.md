@@ -121,20 +121,31 @@ Launch 参数与节点参数同名，直接通过 `<arg>` / `<param>` 传递，�
 | `--db` | `/tmp/face_db/faces.db` |
 | `--faces-dir` | `/tmp/face_db/faces` |
 | `--detection-threshold` | `0.5` |
-| `--recognition-threshold` | `0.5`（实测依据见 [../module/standalone.md#71-识别阈值为什么默认-05](../module/standalone.md#71-识别阈值为什么默认-05)） |
+| `--recognition-threshold` | `0.5`（取值依据见 [face_recognizer.md §阈值取值](../services/face_recognizer.md#阈值取值)） |
 | `--nms-threshold` | `0.5` |
 | `--input-size` | `640` |
 | `--max-faces` | `10` |
+| `--min-face-size` | `80`（人脸框短边低于此值的**只检测不识别**） |
+| `--z-threshold` | `3.0`（队列归一化的 z 门限） |
+| `--min-cohort` | `3`（队列样本不足时退化为纯原始门限） |
+| `--cohort-db` | 空（外部队列库路径） |
+| `--align` | **开**（关键点对齐默认启用；见 [face_recognizer.md §2.1](../services/face_recognizer.md)） |
+| `--no-align` | 关（显式关闭对齐，改用 bbox 裁剪前端；仅用于对比 / 排障） |
+| `--allow-unaligned` | 关（对齐不可用时是否允许回退到 bbox 前端；**不建议**，会导致库内前端混用） |
+| `--no-cohort-norm` | 关（**队列归一化默认开启**） |
 
 ### 5.2 按命令划分
 
 | 命令 | 专有参数 |
 |---|---|
-| `run` | `--source` `--width` `--height` `--fps` `--loop` `--no-display` `--detect-every-n`（默认 `2`）`--downscale` `--no-recognition` `--target-fps`（默认 `24`）`--auto-backfill` `--save-video` `--snapshot-dir` |
+| `run` | `--source` `--camera`（编号或 `/dev/videoN`，优先于 `--source`）`--width` `--height`（USB 摄像头默认 `1280x720`，传 `0` 用摄像头默认）`--fps` `--fourcc`（`MJPG` / `YUYV`，缺省 ≥720p 自动 MJPG）`--loop` `--no-display` `--detect-every-n`（默认 `2`）`--downscale` `--no-recognition` `--target-fps`（默认 `24`）`--auto-backfill` `--save-video` `--snapshot-dir` |
+| `cameras` | `--probe`（额外试出 1920x1080 / 1280x720 / 640x480 / 320x240 各档实际协商结果） |
 | `add` | `--image`（必需）`--name`（必需）`--title` `--scene` `--map-location` |
 | `add-bulk` | `--dir`（必需）`--scene` `--map-location` `--recursive` |
-| `backfill` | 仅全局参数 |
-| `list` / `clear` | 仅全局参数 |
+| `add-template` | `--id`（必需）`--image`（必需）——给已有身份追加一"枪" |
+| `verify` | `--image`（必需）——对全库排序并打印判定过程 |
+| `backfill` | `--all`（重算**全部**记录；缺省只补 `embedding` 为空的记录） |
+| `list` / `clear` / `help` | 仅全局参数 |
 | `remove` | `--id`（必需） |
 | `web` | `--port` `--web-binary` |
 
@@ -192,9 +203,12 @@ Launch 参数与节点参数同名，直接通过 `<arg>` / `<param>` 传递，�
 推荐起点：检测 `0.5`、识别 `0.5`、NMS `0.5`（standalone 实时场景再加
 `--input-size 320`，`--detect-every-n 2` 已是默认）。
 
-> **识别阈值不要沿用 0.7**：实测同一人在 640×480 + JPEG 条件下相似度仅
-> `0.69`，不同人最高 `0.40`。详见
-> [../module/standalone.md#71-识别阈值为什么默认-05](../module/standalone.md#71-识别阈值为什么默认-05)。
+> **识别阈值不要沿用 0.7**：它落在"本人"与"不同人"两簇之间偏上的位置，会漏判大量
+> 现场画面。取值依据见 [face_recognizer.md §阈值取值](../services/face_recognizer.md#阈值取值)。
+>
+> ⚠️ 识别器**前端（对齐 / bbox 裁剪）或预处理配方**变更会**使全部已存特征失效**，
+> 升级后需执行 `face_recognition_app backfill --all` 重建，否则会出现"本人识别不出、
+> 他人也能识别"。详见 [../FAQ/troubleshooting.md](../FAQ/troubleshooting.md)。
 >
 > ROS1 / ROS2 节点的 `confidence_threshold` 参数默认仍为 `0.7`，且**同时**作为
 > 检测置信度与识别相似度阈值传入，现场使用建议一并下调（见

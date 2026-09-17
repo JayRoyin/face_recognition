@@ -16,7 +16,7 @@
 |---|---|---|---|
 | 构建工具 | `cmake` `make` `g++` | 必需 | CMake ≥ 3.10 |
 | 视觉库 | `libopencv-dev` | 必需 | OpenCV ≥ 4.5（图像编解码、缩放、绘制） |
-| 推理引擎 | ONNX Runtime（C++） | 必需 | RetinaFace 检测模型依赖，CMake 会自动探测常见路径 |
+| 推理引擎 | ONNX Runtime（C++） | 必需 | 检测模型（SCRFD / `det_10g.onnx`）依赖，CMake 会自动探测常见路径 |
 | 数据库 | `libsqlite3-dev` | 必需 | 用于 `pkg-config` 解析传递依赖；实际链接的是 vendored 版本 |
 | 唯一 ID | `uuid-dev` | 必需 | 人脸记录 UUID 生成 |
 | Web 服务 | `libmicrohttpd-dev` | 仅 `./build.sh WEB` 需要 | HTTP 服务与 MJPEG 推流 |
@@ -56,8 +56,9 @@ libmicrohttpd），把源码放进 `third_party/libmicrohttpd/` 并打开
 
 ## 3. ONNX Runtime（C++ 版）
 
-`face_recognition_core` 使用 ONNX Runtime 运行 RetinaFace（`det_10g.onnx`，
-输出含动态 `Reshape`，OpenCV DNN 无法执行）。CMake 会按以下顺序自动探测：
+`face_recognition_core` 使用 ONNX Runtime 运行检测模型（`det_10g.onnx`，SCRFD 系列，
+输出含动态 `Reshape`，OpenCV DNN 无法执行）。识别模型则用 OpenCV DNN。
+CMake 会按以下顺序自动探测：
 
 ```
 ${HOME}/.local/onnxruntime/{include,lib}
@@ -205,11 +206,60 @@ BUILD_SPATIALITE=ON ./build.sh ALL
 
 ## 8. 首次跑通验证
 
+### 8.1 不依赖 ROS：Web 传图录入 → 实时识别（推荐先做这一步）
+
 ```bash
-# 1) 确认模型就位
+cd ~/Royin_Project/face_recognition
+
+# ① 确认模型就位
 ls -l models/det_10g.onnx models/w600k_r50.onnx
 
-# 2) 启动 ROS2 节点
+# ② 构建「Web 人脸库后台」与「standalone 实时识别」（无需任何 ROS 环境）
+./build.sh WEB
+./build.sh STANDALONE
+# 等价于：make -C src/face_recognition_standalone/build -j$(nproc)
+
+APP=./src/face_recognition_standalone/build/face_recognition_app
+
+# ③ 启动 Web 人脸库后台（与实时识别共用同一个 SQLite 库）
+$APP web --port 8080
+```
+
+```bash
+# ④ 浏览器打开 http://localhost:8080/ ，在 “Add Face” 表单里传图录入：
+#      · Name（必填）；可选 Title / Scene / Map Location
+#      · “Or Upload” 选择本地照片；也可在 “Image URL” 填图片链接
+#      · 点 “Add Face” → 提示 Face added with embedding 即成功
+#      · 下方 “Face List” 会实时显示该人与缩略图
+#
+#    Web 端在录入时已完成检测与特征提取，embedding 随记录一起写库。
+
+# ⑤ 另开终端启动实时识别（默认 USB 摄像头 /dev/video0）
+$APP run --source 0
+```
+
+**录入失败时的判断**
+
+| 现象 | 原因 | 处理 |
+|---|---|---|
+| 提示 `Refused: no embedding could be extracted` | Web 服务没找到模型 | 在项目根目录启动，或显式传 `--detection-model` / `--recognition-model` |
+| 提示 `Name is required` | 未填姓名 | 表单 Name 必填 |
+| 录入成功但实时识别一直 `Unknown` | 库内特征由旧版本 / 旧前端产生 | `$APP backfill --all` 重建全部特征 |
+
+需要**给同一个人补一枪**（例如再传一张不戴眼镜 / 侧脸的照片来提高召回）时用 CLI：
+`$APP list` 取到 id，再 `$APP add-template --id <uuid> --image <照片>`。
+批量入库（整个目录）用 `$APP add-bulk --dir <目录>`。
+
+> **只要改动了取脸前端、检测解码或预处理，就必须重跑 `backfill --all`**，
+> 否则库内特征与当前代码不在同一空间，会出现"本人识别不出、他人也能识别"。
+
+需要**量化中间分数**时（排障而非日常使用）再用 `$APP verify --image <图片>`，
+它会打印排名、原始相似度、队列统计与拒绝原因；判读要点见
+[FAQ/troubleshooting.md](FAQ/troubleshooting.md#四离线功能验证)。
+
+### 8.2 ROS2 节点
+
+```bash
 source scripts/setup_env.sh
 ros2 launch face_recognition_ros2 face_recognition.launch.py
 
@@ -218,9 +268,6 @@ ros2 launch face_recognition_ros2 face_recognition.launch.py
 # [INFO] [...] Face recognizer initialized
 # [INFO] [...] Face database initialized with N faces
 ```
-
-离线功能验证（不依赖 ROS 与摄像头）见
-[module/standalone.md](module/standalone.md) 与 [FAQ/troubleshooting.md](FAQ/troubleshooting.md)。
 
 ---
 

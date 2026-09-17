@@ -1,104 +1,95 @@
 # face_recognition_standalone
 
-A **standalone C++17** real-time face recognition application. It uses the same
-core algorithm library as the ROS1/ROS2 packages in this repo (`face_recognition_core`)
-but does **not depend on ROS** at all — only OpenCV, ONNX Runtime, and SQLite3.
+A **standalone C++17** real-time face recognition application. It uses the same core
+algorithm library as the ROS1/ROS2 packages (`face_recognition_core`) but does **not**
+depend on ROS — only OpenCV, ONNX Runtime and SQLite3.
 
-## Features
+> **完整文档（命令、参数、默认值、调优、排障）统一维护在
+> [`docs/module/standalone.md`](../../docs/module/standalone.md)。**
+> 本文件只保留包级概览，避免两处重复维护、相互矛盾。
 
-- Camera / RTSP / HTTP / video-file / image-directory input (auto-detected from
-  the `--source` URI).
-- Per-frame face detection (RetinaFace or YOLOv8 via ONNX) + ArcFace embedding
-  recognition against a local SQLite database.
-- OpenCV window display with bounding boxes, names, similarity scores, and
-  landmark dots.
-- Optional MP4 output (`--save-video`) and per-recognition JPEG snapshots
-  (`--snapshot-dir`).
-- Subcommands to manage the face database from the CLI:
-  - `run`    — real-time recognition loop
-  - `add`    — register a face from an image
-  - `list`   — list faces in the DB
-  - `remove` — delete a face by ID
-  - `clear`  — wipe the database
+---
 
 ## Build
 
-The standalone app is built by the top-level `build.sh`:
-
 ```bash
-./build.sh STANDALONE
+./build.sh STANDALONE                 # 或
+make -C src/face_recognition_standalone/build -j$(nproc)
 ```
 
-The resulting binary lives at:
+Binary:
+
 ```
-build/face_recognition_standalone/face_recognition_app
+src/face_recognition_standalone/build/face_recognition_app
 ```
 
-It links to the shared `libface_recognition_core.so` from the same `build/`
-tree, so set the `LD_LIBRARY_PATH` as printed by `build.sh` (or run the wrapper
-script `./scripts/run_standalone.sh` if you prefer).
+It links the shared `libface_recognition_core.so` built in the same tree
+(`build/face_recognition_core_build/`), which resolves via RPATH — no manual
+`LD_LIBRARY_PATH` needed.
+
+---
+
+## Features
+
+- Input auto-detected from `--source`: USB camera index / device node / RTSP /
+  HTTP-MJPEG / video file / single image / image directory.
+- Per-frame detection (`det_10g.onnx`, SCRFD) + 5-point landmark alignment +
+  ArcFace (`w600k_r50.onnx`) 512-d embedding matching against a SQLite gallery.
+- Two front-ends (landmark-aligned crop by default, bounding-box crop via
+  `--no-align`). They are **not** interchangeable inside one gallery — see the
+  module doc before switching.
+- OpenCV window with boxes, names, similarity scores and landmark dots; headless
+  fallback when no GUI is available.
+- Optional MP4 output (`--save-video`) and per-recognition JPEG snapshots
+  (`--snapshot-dir`).
+
+## Subcommands
+
+```
+run           real-time recognition loop
+add           register a face from an image
+add-bulk      register every image in a directory (filename -> name)
+add-template  add an extra shot to an existing identity (multi-template)
+verify        score one image against the whole gallery and show the decision
+backfill      re-extract embeddings from stored thumbnails (--all = every row)
+list          list registered faces
+remove        delete a face by id
+clear         wipe the database
+web           launch the bundled face_db_web UI on the same DB
+help          print usage
+```
 
 ## Quick start
 
 ```bash
-# 1. Show help
-./build/face_recognition_standalone/face_recognition_app help
+cd <repo root>
+APP=./src/face_recognition_standalone/build/face_recognition_app
 
-# 2. Register a face from a still image
-./build/face_recognition_standalone/face_recognition_app add \
-    --image alice.jpg --name Alice --title "CEO" --scene office
-
-# 3. List faces
-./build/face_recognition_standalone/face_recognition_app list
-
-# 4. Real-time recognition from the default USB camera
-./build/face_recognition_standalone/face_recognition_app run --source 0
-
-# 5. From an RTSP stream, headless, saving snapshots
-./build/face_recognition_standalone/face_recognition_app run \
-    --source rtsp://user:pass@192.168.1.10/stream1 \
-    --no-display --snapshot-dir snapshots
-
-# 6. From a video file with annotated output
-./build/face_recognition_standalone/face_recognition_app run \
-    --source input.mp4 --save-video annotated.mp4
+$APP help
+$APP add --image alice.jpg --name Alice --title "CEO" --scene office
+$APP list
+$APP verify --image alice_another_photo.jpg      # 看排名与判定原因
+$APP run --source 0                              # 实时识别
 ```
 
 Press `q` / `ESC` in the window to stop, or `Ctrl+C` in a terminal.
 
-## Paths & defaults
+## Defaults (摘要，完整表格见模块文档)
 
-| Option                  | Default                   |
-| ----------------------- | ------------------------- |
-| `--detection-model`     | `models/det_10g.onnx`     |
-| `--recognition-model`   | `models/w600k_r50.onnx`   |
-| `--db`                  | `data/faces.db`           |
-| `--faces-dir`           | `data/faces`              |
-| `--detection-threshold` | `0.5`                     |
-| `--recognition-threshold` | `0.7`                   |
-| `--nms-threshold`       | `0.5`                     |
-| `--input-size`          | `640`                     |
+| Option | Default |
+| --- | --- |
+| `--detection-model` | `models/det_10g.onnx` |
+| `--recognition-model` | `models/w600k_r50.onnx` |
+| `--db` | `/tmp/face_db/faces.db` |
+| `--faces-dir` | `/tmp/face_db/faces` |
+| `--detection-threshold` | `0.5` |
+| `--recognition-threshold` | `0.5` |
+| `--nms-threshold` | `0.5` |
+| `--input-size` | `640` |
+| `--align` | on (strict) |
+| `--min-face-size` | `80` |
+| `--detect-every-n` | `2` |
+| `--target-fps` | `24` |
 
-All paths are resolved relative to the **current working directory**, so you
-should `cd` to the repository root (or pass absolute paths).
-
-## Architecture
-
-```
-main.cpp                 ──┐
-recognition_pipeline.cpp   ├─►  face_recognition_app (executable)
-video_source.cpp           │
-cli.cpp                  ──┘
-                                    │
-                                    ▼
-                       face_recognition_core  (shared library)
-                                    │
-                ┌───────────────────┼────────────────────┐
-                ▼                   ▼                    ▼
-        FaceDetector         FaceRecognizer        FaceDatabase
-        (RetinaFace /        (ArcFace w600k_r50)   (SQLite3)
-         YOLOv8 ONNX)
-```
-
-`face_recognition_core` is the exact same library the ROS packages use — only
-the application layer (`face_recognition_app`) is new.
+All paths are resolved relative to the **current working directory**, so `cd` to the
+repository root or pass absolute paths.

@@ -46,7 +46,8 @@ FaceRecognitionNode::FaceRecognitionNode()
             if (image.empty()) continue;
             auto detections = detector_->detect(image, 1);
             if (!detections.empty()) {
-                auto embedding = recognizer_->extract_embedding(image, detections.front().bbox);
+                auto embedding = recognizer_->extract_embedding(
+                    image, detections.front().bbox, detections.front().landmarks);
                 if (!embedding.empty()) database_->update_embedding(face.id, embedding);
             }
         }
@@ -103,7 +104,7 @@ void FaceRecognitionNode::imageCallback(const sensor_msgs::ImageConstPtr& msg) {
     result_msg.header = msg->header;
 
     for (const auto& det : detections) {
-        auto embedding = recognizer_->extract_embedding(image, det.bbox);
+        auto embedding = recognizer_->extract_embedding(image, det.bbox, det.landmarks);
         if (embedding.empty()) {
             continue;
         }
@@ -213,7 +214,10 @@ bool FaceRecognitionNode::addFaceCallback(face_recognition_ros1_interfaces::AddF
         cv::Mat image = cv::imdecode(buf, cv::IMREAD_COLOR);
         if (!image.empty()) {
             auto detections = detector_->detect(image, 1);
-            if (!detections.empty()) embedding = recognizer_->extract_embedding(image, detections.front().bbox);
+            if (!detections.empty()) {
+                embedding = recognizer_->extract_embedding(
+                    image, detections.front().bbox, detections.front().landmarks);
+            }
         }
     }
     std::string id = database_->add_face(

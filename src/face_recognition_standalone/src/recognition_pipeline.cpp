@@ -1,7 +1,7 @@
 #include "face_recognition_standalone/recognition_pipeline.hpp"
 
-#include <opencv2/imgproc.hpp>
 #include <opencv2/imgcodecs.hpp>
+#include <opencv2/imgproc.hpp>
 
 #include <chrono>
 #include <cstdio>
@@ -56,6 +56,7 @@ bool RecognitionPipeline::initialize(const PipelineConfig& cfg, std::string& err
         recognizer_.reset();
         return false;
     }
+    recognizer_->setAlignmentEnabled(cfg_.align);
 
     database_ = std::make_unique<face_recognition::FaceDatabase>();
     if (!database_->initialize(cfg_.db_path, cfg_.faces_dir)) {
@@ -65,8 +66,82 @@ bool RecognitionPipeline::initialize(const PipelineConfig& cfg, std::string& err
         database_.reset();
         return false;
     }
+    database_->setNormalizationDefaults(cfg_.z_threshold, cfg_.min_cohort,
+                                       cfg_.cohort_norm);
+
+    // Optional external impostor cohort, used for score normalisation.
+    if (!cfg_.cohort_db.empty()) {
+        auto cohort = std::make_unique<face_recognition::FaceDatabase>();
+        if (cohort->initialize(cfg_.cohort_db, cfg_.faces_dir)) {
+            std::vector<std::vector<float>> embs;
+            for (const auto& f : cohort->list_faces()) {
+                if (!f.embedding.empty()) embs.push_back(f.embedding);
+            }
+            for (const auto& t : cohort->list_templates("")) {
+                if (!t.embedding.empty()) embs.push_back(t.embedding);
+            }
+            std::printf("[INFO] cohort DB: %s (%zu embeddings)\n",
+                        cfg_.cohort_db.c_str(), embs.size());
+            database_->setCohortEmbeddings(std::move(embs));
+        } else {
+            std::fprintf(stderr, "[WARN] cannot open cohort DB: %s\n",
+                         cfg_.cohort_db.c_str());
+        }
+    }
 
     ready_ = true;
+    return true;
+}
+
+bool RecognitionPipeline::detect_largest(const cv::Mat& image,
+                                         face_recognition::FaceDetection& out,
+                                         std::string& err) {
+    auto detections = detector_->detect(image, 10);
+    if (detections.empty()) {
+        err = "no face detected";
+        return false;
+    }
+    // Prefer the largest face: for enrolment/verification the subject is
+    // normally the closest face in the frame.
+    size_t best = 0;
+    double best_area = 0.0;
+    for (size_t i = 0; i < detections.size(); ++i) {
+        const double area = static_cast<double>(detections[i].bbox.width) *
+                            static_cast<double>(detections[i].bbox.height);
+        if (area > best_area) { best_area = area; best = i; }
+    }
+    out = detections[best];
+    return true;
+}
+
+bool RecognitionPipeline::prepare_embedding(const cv::Mat& image,
+                                            const face_recognition::FaceDetection& det,
+                                            std::vector<float>& embedding,
+                                            std::string& reason) {
+    const int short_side = static_cast<int>(
+        std::min(det.bbox.width, det.bbox.height));
+    if (short_side < cfg_.min_face_size) {
+        char buf[96];
+        std::snprintf(buf, sizeof(buf), "too small (%dx%d < %d px)",
+                      det.bbox.width, det.bbox.height, cfg_.min_face_size);
+        reason = buf;
+        return false;
+    }
+
+    bool used_alignment = false;
+    embedding = recognizer_->extract_embedding(image, det.bbox, det.landmarks,
+                                              &used_alignment);
+    if (embedding.empty()) {
+        reason = "no embedding";
+        return false;
+    }
+
+    // Refuse to mix front-ends: a bbox-crop embedding is not comparable with
+    // the aligned embeddings that a normal gallery contains.
+    if (cfg_.align && !used_alignment && !cfg_.allow_unaligned) {
+        reason = "no landmarks";
+        return false;
+    }
     return true;
 }
 
@@ -80,10 +155,8 @@ std::vector<RecognizedFace> RecognitionPipeline::process(cv::Mat& image,
 
     auto t_total = std::chrono::steady_clock::now();
 
-    // Optional pre-resize. If downscale_max_side > 0 and the input is larger,
-    // we shrink the longest side. Recognition uses the *original* bbox
-    // coordinates so embedding quality is unaffected — only the detector
-    // pays the smaller-resolution cost.
+    // Optional pre-resize for the DETECTOR only; recognition always uses the
+    // original coordinates so embedding quality is unaffected.
     cv::Mat detect_view = image;
     double x_scale = 1.0, y_scale = 1.0;
     if (cfg_.downscale_max_side > 0) {
@@ -110,7 +183,6 @@ std::vector<RecognizedFace> RecognitionPipeline::process(cv::Mat& image,
         detections = detector_->detect(detect_view, cfg_.max_faces);
         det_ms = ms_since(t_det);
 
-        // Scale bbox coords back to original-frame coords.
         if (x_scale != 1.0 || y_scale != 1.0) {
             for (auto& d : detections) {
                 d.bbox.x = static_cast<uint32_t>(d.bbox.x * x_scale);
@@ -125,10 +197,8 @@ std::vector<RecognizedFace> RecognitionPipeline::process(cv::Mat& image,
                 }
             }
         }
-        last_detections_ = detections;  // cache for skipped frames
+        last_detections_ = detections;
     } else if (!last_detections_.empty()) {
-        // On skipped frames, still try to recognize against the cached bboxes
-        // so the visual annotation stays consistent.
         detections = last_detections_;
     }
 
@@ -138,25 +208,37 @@ std::vector<RecognizedFace> RecognitionPipeline::process(cv::Mat& image,
             RecognizedFace rf;
             rf.detection = det;
 
-            std::vector<float> embedding = recognizer_->extract_embedding(image, det.bbox);
-            if (embedding.empty()) continue;
+            std::vector<float> embedding;
+            std::string qerr;
+            if (!prepare_embedding(image, det, embedding, qerr)) {
+                rf.reason = qerr;
+                out.push_back(std::move(rf));
+                continue;
+            }
 
-            auto match = database_->find_matching_face(embedding, cfg_.recognition_threshold);
-            if (match) {
-                rf.id = match->id;
-                rf.name = match->name;
-                rf.title = match->title;
-                rf.similarity = face_recognition::compute_similarity(embedding, match->embedding);
+            auto res = database_->match_face(embedding, cfg_.recognition_threshold,
+                                            cfg_.z_threshold, cfg_.min_cohort,
+                                            cfg_.cohort_norm);
+            rf.similarity    = res.raw_similarity;
+            rf.z_score       = res.z_score;
+            rf.cohort_median = res.cohort_median;
+            rf.cohort_size   = res.cohort_size;
+            rf.cohort_used   = res.normalized;
+            rf.reason        = res.reason;
+            if (res.accepted) {
+                rf.id    = res.face_id;
+                rf.name  = res.name;
+                rf.title = res.title;
                 rf.recognized = true;
             }
             out.push_back(std::move(rf));
         }
         rec_ms = ms_since(t_rec);
     } else {
-        // Detection-only: just echo the detections.
         for (const auto& det : detections) {
             RecognizedFace rf;
             rf.detection = det;
+            rf.reason = "recognition disabled";
             out.push_back(std::move(rf));
         }
     }
@@ -195,27 +277,109 @@ std::string RecognitionPipeline::register_face_from_image(const std::string& ima
         return {};
     }
 
-    auto detections = detector_->detect(img, 1);
-    if (detections.empty()) {
-        if (err) *err = "No face detected in " + image_path;
+    face_recognition::FaceDetection det;
+    std::string derr;
+    if (!detect_largest(img, det, derr)) {
+        if (err) *err = derr + " in " + image_path;
         return {};
     }
 
-    std::vector<float> embedding = recognizer_->extract_embedding(img, detections.front().bbox);
-    if (embedding.empty()) {
-        if (err) *err = "Failed to extract embedding";
+    std::vector<float> embedding;
+    std::string qerr;
+    if (!prepare_embedding(img, det, embedding, qerr)) {
+        if (err) *err = "Face rejected [" + qerr + "]: " + image_path;
         return {};
     }
 
     std::vector<uint8_t> image_data;
     {
-        std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 90};
+        std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 95};
         cv::imencode(".jpg", img, image_data, params);
     }
 
-    std::string id = database_->add_face(name, embedding, image_data, title, scene, map_location);
+    std::string id = database_->add_face(name, embedding, image_data, title, scene,
+                                        map_location);
     if (id.empty() && err) *err = "Failed to insert face into DB";
     return id;
+}
+
+std::string RecognitionPipeline::add_template_from_image(const std::string& face_id,
+                                                        const std::string& image_path,
+                                                        std::string* err) {
+    if (!ready_) {
+        if (err) *err = "Pipeline not initialized";
+        return {};
+    }
+    if (!database_->get_face(face_id)) {
+        if (err) *err = "Unknown face id: " + face_id;
+        return {};
+    }
+    cv::Mat img = cv::imread(image_path, cv::IMREAD_COLOR);
+    if (img.empty()) {
+        if (err) *err = "Failed to read image: " + image_path;
+        return {};
+    }
+    face_recognition::FaceDetection det;
+    std::string derr;
+    if (!detect_largest(img, det, derr)) {
+        if (err) *err = derr + " in " + image_path;
+        return {};
+    }
+    std::vector<float> embedding;
+    std::string qerr;
+    if (!prepare_embedding(img, det, embedding, qerr)) {
+        if (err) *err = "Face rejected [" + qerr + "]: " + image_path;
+        return {};
+    }
+
+    // Keep our own copy of the shot so it can be rebuilt by `backfill --all`.
+    std::vector<uint8_t> image_data;
+    {
+        std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 95};
+        cv::imencode(".jpg", img, image_data, params);
+    }
+    std::string stored_path;
+    const int n = database_->template_count(face_id);
+    char fname[512];
+    std::snprintf(fname, sizeof(fname), "%s_t%d", face_id.c_str(), n + 1);
+    if (database_->save_image(fname, image_data, stored_path)) {
+        // save_image appends ".jpg" to the id we passed.
+    }
+
+    if (!database_->add_template(face_id, embedding, stored_path)) {
+        if (err) *err = "Failed to insert template";
+        return {};
+    }
+    return stored_path;
+}
+
+VerifyReport RecognitionPipeline::verify_image(const std::string& image_path) {
+    VerifyReport rep;
+    if (!ready_) { rep.error = "Pipeline not initialized"; return rep; }
+
+    cv::Mat img = cv::imread(image_path, cv::IMREAD_COLOR);
+    if (img.empty()) { rep.error = "Failed to read image: " + image_path; return rep; }
+
+    face_recognition::FaceDetection det;
+    std::string derr;
+    if (!detect_largest(img, det, derr)) { rep.error = derr; return rep; }
+    rep.faces_detected = 1;
+
+    // Same gate as the live loop / enrolment, so `verify` reports exactly the
+    // decision the system would make at runtime.
+    std::vector<float> embedding;
+    std::string qerr;
+    if (!prepare_embedding(img, det, embedding, qerr)) {
+        rep.error = "face rejected by quality gate [" + qerr + "]";
+        return rep;
+    }
+
+    rep.ranked = database_->rank_faces(embedding);
+    rep.decision = database_->match_face(embedding, cfg_.recognition_threshold,
+                                        cfg_.z_threshold, cfg_.min_cohort,
+                                        cfg_.cohort_norm);
+    rep.ok = true;
+    return rep;
 }
 
 int RecognitionPipeline::backfill_embeddings(int* total, int* skipped, int* failed,
@@ -227,44 +391,89 @@ int RecognitionPipeline::backfill_embeddings(int* total, int* skipped, int* fail
     int n_done = 0, n_skip = 0, n_fail = 0;
 
     for (const auto& face : faces) {
+        // ---- primary template (faces.embedding) --------------------------
         if (!face.embedding.empty() && !force) {
             ++n_skip;
-            continue;
-        }
-        if (face.image_path.empty()) {
+        } else if (face.image_path.empty()) {
             ++n_fail;
-            std::fprintf(stderr,
-                "[backfill] id=%s name=%s : no image_path, skipping\n",
-                face.id.c_str(), face.name.c_str());
-            continue;
+            std::fprintf(stderr, "[backfill] id=%s name=%s : no image_path, skipping\n",
+                         face.id.c_str(), face.name.c_str());
+        } else {
+            cv::Mat img = cv::imread(face.image_path, cv::IMREAD_COLOR);
+            if (img.empty()) {
+                ++n_fail;
+                std::fprintf(stderr, "[backfill] id=%s name=%s : failed to read %s\n",
+                             face.id.c_str(), face.name.c_str(),
+                             face.image_path.c_str());
+            } else {
+                face_recognition::FaceDetection det;
+                std::string derr;
+                if (!detect_largest(img, det, derr)) {
+                    ++n_fail;
+                    std::fprintf(stderr, "[backfill] id=%s name=%s : %s in %s\n",
+                                 face.id.c_str(), face.name.c_str(), derr.c_str(),
+                                 face.image_path.c_str());
+                } else {
+                    std::vector<float> emb;
+                    std::string qerr;
+                    if (!prepare_embedding(img, det, emb, qerr) ||
+                        !database_->update_embedding(face.id, emb)) {
+                        ++n_fail;
+                        std::fprintf(stderr, "[backfill] id=%s name=%s : %s\n",
+                                     face.id.c_str(), face.name.c_str(),
+                                     qerr.empty() ? "failed to update embedding"
+                                                  : qerr.c_str());
+                    } else {
+                        ++n_done;
+                        std::printf("[backfill] updated id=%s name=%s (%zu-d embedding)\n",
+                                    face.id.c_str(), face.name.c_str(), emb.size());
+                    }
+                }
+            }
         }
-        cv::Mat img = cv::imread(face.image_path, cv::IMREAD_COLOR);
-        if (img.empty()) {
-            ++n_fail;
-            std::fprintf(stderr,
-                "[backfill] id=%s name=%s : failed to read %s\n",
-                face.id.c_str(), face.name.c_str(), face.image_path.c_str());
-            continue;
+
+        // ---- extra templates --------------------------------------------
+        // Only rebuilt when forcing: otherwise the stored templates are still
+        // valid (they were produced by the same front-end that is running now).
+        if (!force) continue;
+        auto tpls = database_->list_templates(face.id);
+        if (tpls.empty()) continue;
+
+        std::vector<std::string> tpl_images;
+        for (const auto& t : tpls) {
+            if (!t.image_path.empty()) tpl_images.push_back(t.image_path);
         }
-        auto detections = detector_->detect(img, 1);
-        if (detections.empty()) {
-            ++n_fail;
-            std::fprintf(stderr,
-                "[backfill] id=%s name=%s : no face detected in %s\n",
-                face.id.c_str(), face.name.c_str(), face.image_path.c_str());
-            continue;
+        database_->remove_templates(face.id);
+
+        int rebuilt = 0;
+        for (const auto& path : tpl_images) {
+            cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
+            if (img.empty()) {
+                std::fprintf(stderr, "[backfill] template image unreadable: %s\n",
+                             path.c_str());
+                continue;
+            }
+            face_recognition::FaceDetection det;
+            std::string derr;
+            if (!detect_largest(img, det, derr)) {
+                std::fprintf(stderr, "[backfill] template %s : %s\n", path.c_str(),
+                             derr.c_str());
+                continue;
+            }
+            std::vector<float> emb;
+            std::string qerr;
+            if (!prepare_embedding(img, det, emb, qerr)) {
+                std::fprintf(stderr, "[backfill] template %s : %s\n", path.c_str(),
+                             qerr.c_str());
+                continue;
+            }
+            if (!database_->add_template(face.id, emb, path)) continue;
+            ++rebuilt;
         }
-        std::vector<float> emb = recognizer_->extract_embedding(img, detections.front().bbox);
-        if (emb.empty() || !database_->update_embedding(face.id, emb)) {
-            ++n_fail;
-            std::fprintf(stderr,
-                "[backfill] id=%s name=%s : failed to extract/update embedding\n",
-                face.id.c_str(), face.name.c_str());
-            continue;
+        if (!tpl_images.empty()) {
+            std::printf("[backfill] id=%s name=%s : rebuilt %d/%zu extra template(s)\n",
+                        face.id.c_str(), face.name.c_str(), rebuilt, tpl_images.size());
         }
-        ++n_done;
-        std::printf("[backfill] updated id=%s name=%s (%zu-d embedding)\n",
-                    face.id.c_str(), face.name.c_str(), emb.size());
     }
 
     if (total)   *total   = n_total;
@@ -285,22 +494,42 @@ void draw_results(cv::Mat& image, const std::vector<RecognizedFace>& faces) {
                       color, 2);
 
         std::string label;
+        char buf[192];
         if (rf.recognized) {
-            char buf[128];
-            std::snprintf(buf, sizeof(buf), "%s (%.2f)", rf.name.c_str(), rf.similarity);
-            label = buf;
-            if (!rf.title.empty()) {
-                label += " - " + rf.title;
+            // Show the z-score too when cohort normalisation was applied — it
+            // is the quantity the decision actually used.
+            if (rf.cohort_used) {
+                std::snprintf(buf, sizeof(buf), "%s (%.2f z=%.1f)",
+                              rf.name.c_str(), rf.similarity, rf.z_score);
+            } else {
+                std::snprintf(buf, sizeof(buf), "%s (%.2f)", rf.name.c_str(),
+                              rf.similarity);
             }
+            label = buf;
+            if (!rf.title.empty()) label += " - " + rf.title;
         } else {
-            label = "Unknown";
+            // Quality-gate rejections carry a short reason. Show it instead of
+            // a bare "Unknown" so it is obvious WHY nothing matched.
+            std::string tag;
+            if (rf.reason.rfind("too small", 0) == 0)          tag = "too small";
+            else if (rf.reason.rfind("no landmarks", 0) == 0)  tag = "no-align";
+            else if (rf.reason.rfind("no embedding", 0) == 0)  tag = "no-emb";
+
+            if (!tag.empty()) {
+                std::snprintf(buf, sizeof(buf), "[%s]", tag.c_str());
+            } else if (rf.cohort_used) {
+                std::snprintf(buf, sizeof(buf), "Unknown (%.2f z=%.1f)",
+                              rf.similarity, rf.z_score);
+            } else {
+                std::snprintf(buf, sizeof(buf), "Unknown (%.2f)", rf.similarity);
+            }
+            label = buf;
         }
         int x = static_cast<int>(b.x);
         int y = static_cast<int>(b.y);
         if (y < 12) y = 12;
         draw_label(image, label, x, y, color, cv::Scalar(255, 255, 255));
 
-        // Landmarks (if available)
         if (rf.detection.landmarks.size() == 10) {
             for (size_t i = 0; i < 5; ++i) {
                 cv::circle(image,

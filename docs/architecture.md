@@ -18,8 +18,8 @@
 │                   核心算法层 face_recognition_core                    │
 │  ┌────────────────┐ ┌──────────────────┐ ┌───────────────────────┐  │
 │  │  FaceDetector  │ │  FaceRecognizer  │ │     FaceDatabase      │  │
-│  │ RetinaFace /   │ │ ArcFace w600k_r50│ │  SQLite3 + 缩略图归档  │  │
-│  │ YOLOv8 (ONNX)  │ │ 512-d embedding  │ │  + 余弦相似度检索      │  │
+│  │ SCRFD(det_10g)/│ │ ArcFace w600k_r50│ │  SQLite3 + 缩略图归档  │  │
+│  │ YOLOv8 (ORT)   │ │ 512-d embedding  │ │  + 余弦检索 + 多模板   │  │
 │  └────────────────┘ └──────────────────┘ └───────────────────────┘  │
 └──────────────────────────────┬──────────────────────────────────────┘
                                │
@@ -51,22 +51,23 @@
    ROS 话题 /image_raw ─────┤
                             ▼
                    ┌──────────────────┐
-                   │  FaceDetector    │  resize → ONNX → 解码 → NMS
-                   │  (RetinaFace)    │  输出：bbox + 5 点关键点 + score
+                   │  FaceDetector    │  letterbox → ONNX → 解码 → NMS
+                   │  (SCRFD det_10g) │  输出：bbox + 5 点关键点 + score
                    └────────┬─────────┘
                             │ FaceDetection[]
                             ▼
                    ┌──────────────────┐
-                   │ FaceRecognizer   │  对齐裁剪 → 112×112 → ArcFace
+                   │ FaceRecognizer   │  5 点对齐裁剪（默认）→ 112×112 → ArcFace
                    │  (ArcFace)       │  输出：512-d L2 归一化 embedding
                    └────────┬─────────┘
                             │ std::vector<float>(512)
                             ▼
                    ┌──────────────────┐
-                   │  FaceDatabase    │  与库内每条 embedding 求内积
-                   │ find_matching()  │  （已归一化 ⇒ 内积 = 余弦相似度）
+                   │  FaceDatabase    │  与库内每条模板求内积（取最高分）
+                   │  rank_faces() /  │  已归一化 ⇒ 内积 = 余弦相似度
+                   │  match_face()    │  再做队列归一化 + 阈值判定
                    └────────┬─────────┘
-                            │ similarity ≥ threshold 时命中
+                            │ match_face().accepted == true 时命中
                             ▼
         ┌───────────────────┴────────────────────┐
         ▼                                        ▼
@@ -78,24 +79,40 @@
 
 ## 3. 人脸库存储模型
 
-SQLite 单表 `faces`（详见 [protocol/database_schema.md](protocol/database_schema.md)）：
+SQLite 文件内两张表（详见 [protocol/database_schema.md](protocol/database_schema.md)）：
+
+`faces` —— 一个身份一行：
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
 | `id` | TEXT PK | UUID v4 小写 |
 | `name` | TEXT | 姓名（必填） |
 | `title` | TEXT | 职位 |
-| `embedding` | BLOB | 512 × float32 = 2048 字节，可空 |
+| `embedding` | BLOB | **主模板**：512 × float32 = 2048 字节，可空 |
 | `image_path` | TEXT | 缩略图绝对路径，可空 |
 | `scene` | TEXT | 场景标签 |
 | `map_location` | TEXT | 物理位置 |
 | `created_at` / `updated_at` | INTEGER | Unix 时间戳 |
 
-**embedding 为空**的记录无法参与识别，需通过 `backfill`（CLI）或启动节点时的
+`face_templates` —— 同一身份的**附加模板**（multi-shot，一枪一行）：
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| `id` | INTEGER PK AUTOINCREMENT | 自增主键 |
+| `face_id` | TEXT | 指向 `faces.id` |
+| `embedding` | BLOB | 与主模板同维度、同特征空间 |
+| `image_path` | TEXT | 该枪的来源图，供 `backfill --all` 重建 |
+| `created_at` | INTEGER | Unix 时间戳 |
+
+匹配时对"主模板 + 全部附加模板"取**最高分**，因此一个人的模板数 =
+`1 + COUNT(face_templates)`。给同一人补一枪不同外观（如不戴眼镜、侧脸）能显著
+提升召回，见 [FAQ/troubleshooting.md](FAQ/troubleshooting.md)。
+
+**embedding 为空的记录无法参与识别**，需通过 `backfill`（CLI）或启动节点时的
 自动补全逻辑修复：
 
 - ROS2 节点：构造时遍历库内图片，重新检测 + 提特征后写回
-- standalone：`backfill` 子命令，或 `run --auto-backfill`
+- standalone：`backfill` 子命令（`--all` 强制重建全部），或 `run --auto-backfill`
 
 ---
 
@@ -131,11 +148,14 @@ SQLite 单表 `faces`（详见 [protocol/database_schema.md](protocol/database_s
 
 ## 6. 关键设计决策
 
-### 6.1 为什么使用 ONNX Runtime 而不是 OpenCV DNN
+### 6.1 为什么检测用 ONNX Runtime、识别用 OpenCV DNN
 
-`det_10g.onnx`（RetinaFace）输出含动态 `Reshape`，OpenCV 4.5 的 DNN 模块无法
-执行；ONNX Runtime 支持完整算子集，因此检测器走 ONNX Runtime。
-（`FaceDetector` 内部保留了 OpenCV DNN 路径作为 YOLOv8 后端的兼容选项。）
+`det_10g.onnx`（SCRFD 系列）的输出含动态 `Reshape`，OpenCV 4.5 的 DNN 模块无法
+执行；ONNX Runtime 支持完整算子集，因此**检测器**走 ONNX Runtime。
+
+**识别器**则保留 OpenCV DNN：`w600k_r50.onnx` 只有常规算子，两条路径实测输出一致
+（同一模型、同一输入，两者的 embedding 完全相同），因此选依赖更少的方案，
+少引入一个运行时耦合。
 
 ### 6.2 为什么 vendoring SQLite3
 
@@ -172,12 +192,22 @@ symbol lookup error: __libc_pthread_init, version GLIBC_PRIVATE
 
 ### 6.4 后处理 backend 自动选择
 
-`FaceDetector` 按输出张量 shape 自动选择后处理：
+`FaceDetector` 按输出张量**数量**自动选择后处理：
 
-- **RetinaFace**：9 个输出 `(conf, bbox, landmarks) × 3 层` → `det_10g.onnx`
-- **YOLOv8**：单 `[1, 84, N]` 输出
+- **9 个输出** → RetinaFace/SCRFD 布局 `(conf, bbox, landmarks) × 3 层` → `det_10g.onnx`
+- **其它** → YOLOv8 单输出 `[1, 84, N]`
+
+> 判定依据是**数量**而非 shape：`det_10g.onnx` 声明的是 640×640 的静态输出形状，
+> 用其它 `--input-size` 时 shape 会变，按 shape 判定会误判。
 
 模型 shape 不匹配时**只打印一次**完整 dims/size，避免日志刷屏。
+
+### 6.5 检测后处理必须用 SCRFD 的解码公式
+
+`det_10g.onnx` 是 SCRFD，回归头输出已按 stride 归一化，解码只需乘 `stride`。
+**不要**套用经典 RetinaFace 的 `variance × anchor宽高` 公式——那会把框缩到真值的
+约 60%、把关键点压向中心，进而使对齐裁剪退化、不同人之间相似度虚高。
+细节见 [services/face_detector.md §3.3](services/face_detector.md#33-解码scrfd-约定)。
 
 ---
 

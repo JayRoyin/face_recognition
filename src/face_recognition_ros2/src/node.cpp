@@ -123,7 +123,7 @@ void FaceRecognitionNode::imageCallback(const sensor_msgs::msg::Image::ConstShar
         result_msg.header = msg->header;
 
         for (const auto& det : detections) {
-            auto embedding = recognizer_->extract_embedding(image, det.bbox);
+            auto embedding = recognizer_->extract_embedding(image, det.bbox, det.landmarks);
             if (embedding.empty()) {
                 continue;
             }
@@ -211,7 +211,10 @@ void FaceRecognitionNode::addFaceCallback(const std::shared_ptr<face_recognition
         cv::Mat image = cv::imdecode(buf, cv::IMREAD_COLOR);
         if (!image.empty()) {
             auto detections = detector_->detect(image, 1);
-            if (!detections.empty()) embedding = recognizer_->extract_embedding(image, detections.front().bbox);
+            if (!detections.empty()) {
+                embedding = recognizer_->extract_embedding(
+                    image, detections.front().bbox, detections.front().landmarks);
+            }
         }
     }
     std::string id = database_->add_face(

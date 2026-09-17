@@ -108,9 +108,16 @@ curl -o alice.jpg http://localhost:8080/api/image/550e8400-e29b-41d4-a716-446655
 | 情况 | 状态码 | 响应体 |
 |---|---|---|
 | 成功 | `200` | `{"success":true,"id":"<UUID>","has_embedding":true,"message":"Face added with embedding"}` |
-| 成功但无特征 | `200` | `{"success":true,"id":"<UUID>","has_embedding":false,"message":"Face added (without embedding — no face detected or models not loaded)"}` |
+| 成功但无特征（仅在 `--allow-no-embedding` 下可能） | `200` | `{"success":true,"id":"<UUID>","has_embedding":false,"message":"Face added (without embedding — no face detected or models not loaded)"}` |
+| **拒绝：无法提取特征** | **`409`** | `{"success":false,"id":"","has_embedding":false,"message":"Refused: no embedding could be extracted (...)"}` |
 | `name` 为空 | `400` | `{"success":false,"message":"Name is required"}` |
 | 入库失败 | `200` | `{"success":false,"id":"","has_embedding":false,"message":"Failed to add face"}` |
+
+> **关于 409**：`embedding = NULL` 的记录**永远无法被匹配**，所以服务端默认拒绝写入
+> （避免产生"看着录进去了、其实永远认不出"的记录）。要恢复录入，请让服务端能加载
+> 模型（命令行 / `FACE_DETECTION_MODEL` 等环境变量 / `./models` / `<exe>/../../models`
+> 自动发现），或显式传 `--allow-no-embedding`。详见
+> [../FAQ/troubleshooting.md](../FAQ/troubleshooting.md) 的 Q21。
 
 **示例**
 

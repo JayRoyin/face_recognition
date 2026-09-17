@@ -24,7 +24,50 @@ struct SourceConfig {
     int height = 0;
     int fps = 0;
     bool loop = false;          // loop video files
+    // V4L2 pixel format ("MJPG" / "YUYV" / ...). Empty = auto: MJPG whenever the
+    // frame is >= 720p, because raw YUYV at that size exceeds USB2 bandwidth and
+    // the camera silently falls back to a handful of fps.
+    std::string fourcc;
 };
+
+/**
+ * One locally attached V4L2 video device.
+ *
+ * UVC cameras publish several nodes per physical camera (a capture node plus
+ * auxiliary "metadata" nodes). They all show up under /dev/video*, so the only
+ * reliable way to tell them apart is to try to open each one — which is what
+ * normalize/enumerate below do.
+ */
+struct CameraInfo {
+    int         index    = -1;
+    std::string device;             // "/dev/videoN"
+    std::string name;               // human-readable, from sysfs
+    bool        openable = false;   // false for metadata nodes / busy / gone
+    int         width    = 0;       // negotiated capture mode (0 when not openable)
+    int         height   = 0;
+    double      fps      = 0.0;
+    std::string fourcc;             // negotiated pixel format
+    std::vector<std::string> probe_results;   // only with probe == true
+};
+
+/**
+ * Enumerate the local V4L2 video devices (indices 0 .. max_devices-1).
+ *
+ * @param probe        additionally try the common resolutions on each usable
+ *                     camera and report what it actually negotiates. Slow: the
+ *                     device is re-opened once per candidate mode.
+ * @param max_devices  highest video index to look at.
+ */
+std::vector<CameraInfo> enumerate_cameras(bool probe = false, int max_devices = 16);
+
+/**
+ * Normalise a user-supplied camera selector into a value `infer_source_from_uri`
+ * understands: "0" | "video2" | "/dev/video2" are all accepted.
+ *
+ * @return false and fills `err` when the syntax is invalid or the device does
+ *         not exist (the caller should then point the user at `cameras`).
+ */
+bool normalize_camera_selector(const std::string& in, std::string& out, std::string& err);
 
 class VideoSource {
 public:
@@ -38,6 +81,8 @@ public:
     int width() const;
     int height() const;
     double fps() const;
+    /** Negotiated V4L2 pixel format ("MJPG" / "YUYV"); empty for non-cameras. */
+    std::string fourcc() const;
     SourceType type() const { return cfg_.type; }
     const std::string& uri() const { return cfg_.uri; }
 

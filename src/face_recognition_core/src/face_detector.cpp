@@ -88,18 +88,65 @@ public:
         }
     }
 
-    cv::Mat preprocessRetinaFace(const cv::Mat& image) {
-        cv::Mat rgb;
-        if (image.channels() == 3) {
-            cv::cvtColor(image, rgb, cv::COLOR_BGR2RGB);
+    /**
+     * Geometry of the last preprocess(): how the original frame was scaled and
+     * padded to reach the square network input. Needed to map decoded
+     * coordinates back to image space.
+     */
+    struct LetterboxInfo {
+        double scale = 1.0;   // resize factor applied to the original frame
+        int    pad_x = 0;     // left padding, in network-input pixels
+        int    pad_y = 0;     // top padding
+        bool   valid = false;
+    };
+
+    /**
+     * Aspect-preserving resize + letterbox padding onto a square canvas.
+     *
+     * The network input is square (640x640 / 320x320). Feeding a 16:9 or 4:3
+     * frame by plain `resize` squashes it (a 1280x720 frame is compressed 4x
+     * horizontally but only 2.25x vertically), which distorts every face and
+     * measurably degrades the 5-point landmark regression — and alignment
+     * quality depends directly on landmark accuracy. Padding instead keeps the
+     * geometry the model was trained on.
+     */
+    cv::Mat letterbox(const cv::Mat& image, LetterboxInfo& out_lb) const {
+        cv::Mat src;
+        if (image.channels() == 1) {
+            cv::cvtColor(image, src, cv::COLOR_GRAY2BGR);
+        } else if (image.channels() == 4) {
+            cv::cvtColor(image, src, cv::COLOR_BGRA2BGR);
         } else {
-            rgb = image;
+            src = image;
         }
+        if (src.empty()) return {};
+
+        const double s = std::min(static_cast<double>(input_width) / src.cols,
+                                  static_cast<double>(input_height) / src.rows);
+        const int new_w = std::max(1, static_cast<int>(std::lround(src.cols * s)));
+        const int new_h = std::max(1, static_cast<int>(std::lround(src.rows * s)));
+
+        out_lb.scale = s;
+        out_lb.pad_x = (input_width  - new_w) / 2;
+        out_lb.pad_y = (input_height - new_h) / 2;
+        out_lb.valid = true;
+
         cv::Mat resized;
-        cv::resize(rgb, resized, cv::Size(input_width, input_height));
+        cv::resize(src, resized, cv::Size(new_w, new_h), 0, 0, cv::INTER_LINEAR);
+
+        cv::Mat canvas(input_height, input_width, src.type(), cv::Scalar(0, 0, 0));
+        resized.copyTo(canvas(cv::Rect(out_lb.pad_x, out_lb.pad_y, new_w, new_h)));
+        return canvas;
+    }
+
+    cv::Mat preprocessRetinaFace(const cv::Mat& image, LetterboxInfo& lb) {
+        cv::Mat canvas = letterbox(image, lb);
+        if (canvas.empty()) return {};
+        cv::Mat rgb;
+        cv::cvtColor(canvas, rgb, cv::COLOR_BGR2RGB);
 
         cv::Mat blob;
-        cv::dnn::blobFromImage(resized, blob,
+        cv::dnn::blobFromImage(rgb, blob,
                                1.0 / 128.0,
                                cv::Size(input_width, input_height),
                                cv::Scalar(127.5, 127.5, 127.5),
@@ -108,9 +155,11 @@ public:
         return blob;
     }
 
-    cv::Mat preprocessYolo(const cv::Mat& image) {
+    cv::Mat preprocessYolo(const cv::Mat& image, LetterboxInfo& lb) {
+        cv::Mat canvas = letterbox(image, lb);
+        if (canvas.empty()) return {};
         cv::Mat blob;
-        cv::dnn::blobFromImage(image, blob, 1.0 / 255.0,
+        cv::dnn::blobFromImage(canvas, blob, 1.0 / 255.0,
                                cv::Size(input_width, input_height),
                                cv::Scalar(0, 0, 0),
                                true,
@@ -156,6 +205,7 @@ public:
     std::vector<FaceDetection> postprocessRetinaFace(
             const std::vector<Ort::Value>& outputs,
             float img_w, float img_h,
+            const LetterboxInfo& lb,
             int max_faces) {
         std::vector<FaceDetection> candidates;
 
@@ -177,7 +227,25 @@ public:
         // [7] 477 land_1 [3200,10]
         // [8] 500 land_2 [800,10]
 
-        const float variance[2] = {0.1f, 0.2f};
+        // SCRFD decoding constants. NOTE: det_10g is an SCRFD model, NOT a
+        // classic RetinaFace one. SCRFD regression heads predict distances that
+        // are already normalised by the feature stride, so the decoder must be
+        // a plain `anchor_center +/- raw * stride`:
+        //
+        //     center_x = gx * stride          (no +0.5 cell offset)
+        //     x1 = center_x - raw[0] * stride
+        //     x2 = center_x + raw[2] * stride
+        //     kps_x = center_x + raw_kps[2k] * stride
+        //
+        // The RetinaFace convention (variance 0.1/0.2 applied to the raw
+        // offsets, then multiplied by an anchor box of `stride*4`) does NOT
+        // apply here. Applying it scaled every decoded distance by 0.4 (x1/y1)
+        // or 0.8 (x2/y2) instead of 1.0, which shrank the boxes to ~60% of the
+        // true face extent (cropping the chin and forehead away) and squeezed
+        // the 5 landmarks towards the anchor centre. The landmark compression
+        // made the similarity transform zoom into the eyes/nose, so the aligned
+        // crop contained no mouth or chin at all — and both front-ends produced
+        // embeddings that no longer separated different people.
         const int strides[3] = {8, 16, 32};
 
         // Anchor count per feature layer for the CURRENT input size:
@@ -241,25 +309,24 @@ public:
                         float conf = scores[layer][i];
                         if (conf < confidence_threshold) continue;
 
-                        float cx = (gx + 0.5f) * stride;
-                        float cy = (gy + 0.5f) * stride;
-                        float aw = stride * 4.0f;
-                        float ah = (anchor_type == 0) ? (stride * 4.0f)
-                                                     : (stride * 4.0f * 1.5f);
+                        float cx = gx * stride;
+                        float cy = gy * stride;
 
-                        float dx1 = bboxes[layer][i * 4 + 0] * variance[0] * aw;
-                        float dy1 = bboxes[layer][i * 4 + 1] * variance[0] * ah;
-                        float dx2 = bboxes[layer][i * 4 + 2] * variance[1] * aw;
-                        float dy2 = bboxes[layer][i * 4 + 3] * variance[1] * ah;
+                        float dx1 = bboxes[layer][i * 4 + 0] * stride;
+                        float dy1 = bboxes[layer][i * 4 + 1] * stride;
+                        float dx2 = bboxes[layer][i * 4 + 2] * stride;
+                        float dy2 = bboxes[layer][i * 4 + 3] * stride;
                         float x1 = cx - dx1;
                         float y1 = cy - dy1;
                         float x2 = cx + dx2;
                         float y2 = cy + dy2;
 
-                        float scale_w = img_w / (float)input_width;
-                        float scale_h = img_h / (float)input_height;
-                        x1 *= scale_w; y1 *= scale_h;
-                        x2 *= scale_w; y2 *= scale_h;
+                        // Network-input px -> original image px (undo letterbox).
+                        const float inv_scale = 1.0f / (float)lb.scale;
+                        x1 = (x1 - lb.pad_x) * inv_scale;
+                        y1 = (y1 - lb.pad_y) * inv_scale;
+                        x2 = (x2 - lb.pad_x) * inv_scale;
+                        y2 = (y2 - lb.pad_y) * inv_scale;
 
                         x1 = std::max(0.0f, std::min(img_w - 1.0f, x1));
                         y1 = std::max(0.0f, std::min(img_h - 1.0f, y1));
@@ -279,10 +346,10 @@ public:
 
                         det.landmarks.clear();
                         for (int k = 0; k < 5; ++k) {
-                            float lx = landmarks[layer][i * 10 + k * 2 + 0] * aw * variance[0] + cx;
-                            float ly = landmarks[layer][i * 10 + k * 2 + 1] * ah * variance[0] + cy;
-                            det.landmarks.push_back(lx * scale_w);
-                            det.landmarks.push_back(ly * scale_h);
+                            float lx = landmarks[layer][i * 10 + k * 2 + 0] * stride + cx;
+                            float ly = landmarks[layer][i * 10 + k * 2 + 1] * stride + cy;
+                            det.landmarks.push_back((lx - lb.pad_x) * inv_scale);
+                            det.landmarks.push_back((ly - lb.pad_y) * inv_scale);
                         }
 
                         candidates.push_back(det);
@@ -305,6 +372,7 @@ public:
 
     std::vector<FaceDetection> postprocessYolo(const cv::Mat& output,
                                                 float img_w, float img_h,
+                                                const LetterboxInfo& lb,
                                                 int max_faces) {
         std::vector<FaceDetection> candidates;
         if (output.empty() || output.dims < 2 || output.dims > 3 ||
@@ -334,21 +402,29 @@ public:
         }
         if (num_classes <= 0 || stride <= 0 || num_detections <= 0) return candidates;
 
+        // YOLOv8 emits normalised [0,1] coordinates relative to the network
+        // input canvas, so unpad + unscale them the same way as RetinaFace.
+        const float inv_scale = 1.0f / (float)lb.scale;
+        const float sx = input_width  * inv_scale;
+        const float sy = input_height * inv_scale;
+        auto map_x = [&](float vn) { return vn * sx - (float)lb.pad_x * inv_scale; };
+        auto map_y = [&](float vn) { return vn * sy - (float)lb.pad_y * inv_scale; };
+
         for (int i = 0; i < num_detections; ++i) {
             float cx, cy, w, h, conf;
             if (transposed) {
-                cx = data[i * stride + 0] * img_w;
-                cy = data[i * stride + 1] * img_h;
-                w  = data[i * stride + 2] * img_w;
-                h  = data[i * stride + 3] * img_h;
+                cx = map_x(data[i * stride + 0]);
+                cy = map_y(data[i * stride + 1]);
+                w  = data[i * stride + 2] * sx;
+                h  = data[i * stride + 3] * sy;
                 conf = 0.0f;
                 for (int c = 4; c < 4 + num_classes; ++c)
                     conf = std::max(conf, data[i * stride + c]);
             } else {
-                cx = data[0 * num_detections + i] * img_w;
-                cy = data[1 * num_detections + i] * img_h;
-                w  = data[2 * num_detections + i] * img_w;
-                h  = data[3 * num_detections + i] * img_h;
+                cx = map_x(data[0 * num_detections + i]);
+                cy = map_y(data[1 * num_detections + i]);
+                w  = data[2 * num_detections + i] * sx;
+                h  = data[3 * num_detections + i] * sy;
                 conf = 0.0f;
                 for (int c = 0; c < num_classes; ++c)
                     conf = std::max(conf, data[(4 + c) * num_detections + i]);
@@ -379,10 +455,12 @@ public:
         if (image.empty() || !model_loaded) return {};
 
         try {
-            // Preprocess image to blob
+            // Preprocess image to blob (letterboxed; geometry kept in `lb`)
+            LetterboxInfo lb;
             cv::Mat blob = (backend_name == "retinaface")
-                            ? preprocessRetinaFace(image)
-                            : preprocessYolo(image);
+                            ? preprocessRetinaFace(image, lb)
+                            : preprocessYolo(image, lb);
+            if (blob.empty() || !lb.valid) return {};
 
             // Prepare input tensor
             std::vector<int64_t> input_dims = {1, 3, input_height, input_width};
@@ -410,7 +488,7 @@ public:
                 output_name_cstrs.data(), output_name_cstrs.size());
 
             if (backend_name == "retinaface") {
-                return postprocessRetinaFace(outputs, image.cols, image.rows, max_faces);
+                return postprocessRetinaFace(outputs, image.cols, image.rows, lb, max_faces);
             } else {
                 if (outputs.empty()) return {};
                 auto shape_info = outputs[0].GetTensorTypeAndShapeInfo();
@@ -419,7 +497,7 @@ public:
                 for (size_t i = 0; i < shape.size(); ++i) shape_int[i] = (int)shape[i];
                 cv::Mat out_mat((int)shape.size(), shape_int.data(), CV_32F,
                                 (void*)outputs[0].GetTensorData<float>());
-                return postprocessYolo(out_mat, image.cols, image.rows, max_faces);
+                return postprocessYolo(out_mat, image.cols, image.rows, lb, max_faces);
             }
         } catch (const Ort::Exception& e) {
             if (last_error != e.what()) {

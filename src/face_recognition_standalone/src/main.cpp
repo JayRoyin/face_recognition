@@ -18,6 +18,8 @@
 #include <string>
 #include <thread>
 #include <atomic>
+#include <algorithm>
+#include <cctype>
 #include <vector>
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -68,10 +70,111 @@ PipelineConfig build_pipeline_config(const CliArgs& args) {
     if (auto v = get_opt(args, "--detect-every-n", "");        !v.empty()) cfg.detect_every_n_frames = std::stoi(v);
     if (auto v = get_opt(args, "--downscale", "");             !v.empty()) cfg.downscale_max_side    = std::stoi(v);
     cfg.run_recognition = !has_opt(args, "--no-recognition");
+
+    // Alignment + cohort normalisation.
+    if (auto v = get_opt(args, "--z-threshold", ""); !v.empty()) cfg.z_threshold = std::stof(v);
+    if (auto v = get_opt(args, "--min-cohort", "");  !v.empty()) cfg.min_cohort  = std::stoi(v);
+    if (auto v = get_opt(args, "--min-face-size", ""); !v.empty()) cfg.min_face_size = std::stoi(v);
+    // Alignment is ON by default (see PipelineConfig::align); `--no-align`
+    // switches back to the bounding-box crop. NOTE: this must NOT be
+    // `has_opt("--align")`, otherwise the flag being absent silently forces the
+    // default off and overrides PipelineConfig.
+    cfg.align           = !has_opt(args, "--no-align");
+    cfg.allow_unaligned = has_opt(args, "--allow-unaligned");
+    cfg.cohort_norm     = !has_opt(args, "--no-cohort-norm");
+    cfg.cohort_db       = get_opt(args, "--cohort-db", "");
     return cfg;
 }
 
+// -----------------------------------------------------------------------------
+// cameras: list the local V4L2 devices so a multi-camera host can pick one.
+// -----------------------------------------------------------------------------
+int cmd_cameras(const CliArgs& args) {
+    const bool probe = has_opt(args, "--probe");
+    auto cams = face_recognition_standalone::enumerate_cameras(probe);
+
+    if (cams.empty()) {
+        std::printf("No V4L2 video device found under /dev/video*.\n\n");
+        std::printf("  - is the camera plugged in and powered?\n");
+        std::printf("  - running inside a container? pass --device=/dev/video0\n");
+        std::printf("  - quick check: ls -l /dev/video*\n");
+        return 1;
+    }
+
+    std::printf("\nCameras on this host (V4L2):\n\n");
+    std::printf("  %-6s %-13s %-38s %-18s %s\n",
+                "index", "device", "name", "mode", "status");
+    int usable = 0;
+    for (const auto& c : cams) {
+        char mode[48];
+        if (c.openable) {
+            std::snprintf(mode, sizeof(mode), "%dx%d@%.0f %s",
+                          c.width, c.height, c.fps, c.fourcc.c_str());
+            ++usable;
+        } else {
+            std::snprintf(mode, sizeof(mode), "-");
+        }
+        std::printf("  %-6d %-13s %-38s %-18s %s\n",
+                    c.index, c.device.c_str(),
+                    c.name.empty() ? "(unknown)" : c.name.c_str(), mode,
+                    c.openable ? "ok"
+                               : "cannot open (metadata node / busy / no capture)");
+        for (const auto& r : c.probe_results)
+            std::printf("         probe: %s\n", r.c_str());
+    }
+
+    std::printf("\n%d usable camera(s) out of %zu node(s).\n", usable, cams.size());
+    if (usable < (int)cams.size()) {
+        std::printf("A camera usually publishes several nodes (capture + metadata);\n"
+                    "'cannot open' on the extra ones is expected. If a camera you\n"
+                    "expect is missing entirely, check that the user is in the `video`\n"
+                    "group and that no other program is using it.\n");
+    }
+    std::printf("\nUse one like this:\n\n");
+    std::printf("  face_recognition_app run --camera 0\n");
+    std::printf("  face_recognition_app run --camera 0 --width 1280 --height 720 --fps 30\n");
+    std::printf("  face_recognition_app run --camera 0 --fourcc MJPG\n");
+    std::printf("  face_recognition_app run --camera 0 --width 0 --height 0   "
+                "# keep the camera's own default\n");
+    if (!probe)
+        std::printf("\nAdd --probe to also try the common resolutions on every usable\n"
+                    "camera (slower: re-opens each device once per candidate mode).\n");
+    return 0;
+}
+
 int cmd_run(const CliArgs& args) {
+    // Validate the capture-selection options FIRST. A typo in --camera /
+    // --fourcc should fail immediately, not after the ONNX models and the
+    // database have been loaded.
+    //
+    // `--camera` exists because on a multi-camera host there is no way to know
+    // which /dev/videoN is which physical camera without probing: run the
+    // `cameras` command first, then pass the index it printed. It is equivalent
+    // to --source, except a wrong device is rejected with an actionable message
+    // instead of a generic "Video source not opened".
+    std::string camera_uri;
+    if (auto cam_arg = get_opt(args, "--camera", ""); !cam_arg.empty()) {
+        std::string cam_err;
+        if (!face_recognition_standalone::normalize_camera_selector(cam_arg, camera_uri,
+                                                                    cam_err)) {
+            std::fprintf(stderr, "Invalid --camera %s: %s\n\n%s\n",
+                         cam_arg.c_str(), cam_err.c_str(),
+                         "List the cameras attached to this host with:\n"
+                         "    face_recognition_app cameras");
+            return 2;
+        }
+    }
+    std::string fourcc_arg = get_opt(args, "--fourcc", "");
+    if (!fourcc_arg.empty()) {
+        std::transform(fourcc_arg.begin(), fourcc_arg.end(), fourcc_arg.begin(),
+                       [](unsigned char c) { return static_cast<char>(std::toupper(c)); });
+        if (fourcc_arg.size() != 4) {
+            std::fprintf(stderr, "--fourcc must be a 4-character V4L2 format code "
+                                 "(e.g. MJPG, YUYV)\n");
+            return 2;
+        }
+    }
+
     auto pipe_cfg = build_pipeline_config(args);
 
     RecognitionPipeline pipe;
@@ -92,7 +195,16 @@ int cmd_run(const CliArgs& args) {
     }
 
     SourceConfig src_cfg;
+    // `--camera` was already validated at the top of cmd_run; it wins over
+    // --source when both are given.
     std::string source_uri = get_opt(args, "--source", "0");
+    if (!camera_uri.empty()) {
+        if (has_opt(args, "--source")) {
+            std::fprintf(stderr, "[WARN] --camera %s overrides --source %s\n",
+                         camera_uri.c_str(), source_uri.c_str());
+        }
+        source_uri = camera_uri;
+    }
     if (source_uri.empty()) source_uri = "0";
     if (source_uri.size() >= 2 && source_uri[0] == '/' &&
         std::isdigit(static_cast<unsigned char>(source_uri.back()))) {
@@ -102,6 +214,7 @@ int cmd_run(const CliArgs& args) {
     if (auto v = get_opt(args, "--width",  ""); !v.empty()) src_cfg.width  = std::stoi(v);
     if (auto v = get_opt(args, "--height", ""); !v.empty()) src_cfg.height = std::stoi(v);
     if (auto v = get_opt(args, "--fps",    ""); !v.empty()) src_cfg.fps    = std::stoi(v);
+    if (!fourcc_arg.empty()) src_cfg.fourcc = fourcc_arg;
     src_cfg.loop = has_opt(args, "--loop");
 
     // ---- Recognition frame-rate cap (default: 24 FPS) --------------------
@@ -130,15 +243,23 @@ int cmd_run(const CliArgs& args) {
                 src.uri().c_str());
     if (src.type() != face_recognition_standalone::SourceType::IMAGE_DIR) {
         std::printf(" (%dx%d @ %.1f fps)", src.width(), src.height(), src.fps());
+        const std::string fcc = src.fourcc();
+        if (!fcc.empty()) std::printf(" %s", fcc.c_str());
     }
     std::printf("\n");
     const std::string fps_cap =
         pace ? (std::to_string(static_cast<int>(target_fps)) + " fps") : "off";
-    std::printf("[INFO] recognition: threshold=%.2f detect-every-n=%d "
-                "input-size=%d frame-cap=%s%s\n",
+    std::printf("[INFO] recognition: threshold=%.2f detect-every-n=%d input-size=%d "
+                "align=%s min-face=%dpx frame-cap=%s%s\n",
                 pipe_cfg.recognition_threshold, pipe_cfg.detect_every_n_frames,
-                pipe_cfg.input_size, fps_cap.c_str(),
+                pipe_cfg.input_size,
+                pipe_cfg.align ? (pipe_cfg.allow_unaligned ? "on(soft)" : "on(strict)")
+                               : "off",
+                pipe_cfg.min_face_size, fps_cap.c_str(),
                 pipe_cfg.run_recognition ? "" : " (detection only)");
+    std::printf("[INFO] cohort norm: %s z>=%.2f min-cohort=%d (external cohort=%d)\n",
+                pipe_cfg.cohort_norm ? "on" : "off", pipe_cfg.z_threshold,
+                pipe_cfg.min_cohort, pipe.database().cohortSize());
 
     bool display = !has_opt(args, "--no-display");
     if (display) {
@@ -311,11 +432,13 @@ int cmd_list(const CliArgs& args) {
     std::printf("Faces in DB: %zu\n", faces.size());
     for (const auto& f : faces) {
         bool has_emb = !f.embedding.empty();
-        std::printf("  id=%s name=%-24s title=%-16s scene=%-8s map=%-12s "
-                    "emb=%-5s img=%s\n",
+        const int extra = pipe.database().template_count(f.id);
+        std::printf("  id=%s name=%-20s title=%-14s scene=%-8s map=%-10s "
+                    "emb=%-5s templates=%d img=%s\n",
                     f.id.c_str(), f.name.c_str(), f.title.c_str(),
                     f.scene.c_str(), f.map_location.c_str(),
                     has_emb ? "yes" : "NO",
+                    1 + extra,
                     f.image_path.empty() ? "(none)" : f.image_path.c_str());
     }
     return 0;
@@ -330,9 +453,11 @@ int cmd_backfill(const CliArgs& args) {
         return 1;
     }
     int total = 0, skipped = 0, failed = 0;
-    int updated = pipe.backfill_embeddings(&total, &skipped, &failed);
-    std::printf("backfill done: total=%d updated=%d already_embedded=%d failed=%d\n",
-                total, updated, skipped, failed);
+    const bool force = has_opt(args, "--all");
+    int updated = pipe.backfill_embeddings(&total, &skipped, &failed, force);
+    std::printf("backfill done: total=%d updated=%d already_embedded=%d failed=%d%s\n",
+                total, updated, skipped, failed,
+                force ? "  (--all: every record re-extracted)" : "");
     return failed > 0 ? 1 : 0;
 }
 
@@ -427,6 +552,79 @@ int cmd_clear(const CliArgs& args) {
     return 0;
 }
 
+int cmd_add_template(const CliArgs& args) {
+    const std::string id    = get_opt(args, "--id", "");
+    const std::string image = get_opt(args, "--image", "");
+    if (id.empty() || image.empty()) {
+        std::fprintf(stderr, "`add-template` requires --id <face_id> and --image <path>\n");
+        return 2;
+    }
+    auto cfg = build_pipeline_config(args);
+    RecognitionPipeline pipe;
+    std::string err;
+    if (!pipe.initialize(cfg, err)) {
+        std::fprintf(stderr, "Pipeline init failed: %s\n", err.c_str());
+        return 1;
+    }
+    std::string stored = pipe.add_template_from_image(id, image, &err);
+    if (stored.empty()) {
+        std::fprintf(stderr, "Failed to add template: %s\n", err.c_str());
+        return 1;
+    }
+    std::printf("OK template added to id=%s (stored %s)\n", id.c_str(), stored.c_str());
+    std::printf("    total templates for this id: %d\n",
+                pipe.database().template_count(id) + 1);
+    return 0;
+}
+
+int cmd_verify(const CliArgs& args) {
+    const std::string image = get_opt(args, "--image", "");
+    if (image.empty()) {
+        std::fprintf(stderr, "`verify` requires --image <path>\n");
+        return 2;
+    }
+    auto cfg = build_pipeline_config(args);
+    RecognitionPipeline pipe;
+    std::string err;
+    if (!pipe.initialize(cfg, err)) {
+        std::fprintf(stderr, "Pipeline init failed: %s\n", err.c_str());
+        return 1;
+    }
+    auto rep = pipe.verify_image(image);
+    if (!rep.ok) {
+        std::fprintf(stderr, "verify failed: %s\n", rep.error.c_str());
+        return 1;
+    }
+
+    std::printf("image          : %s\n", image.c_str());
+    std::printf("faces detected : %d\n", rep.faces_detected);
+    std::printf("gallery ranking (raw cosine per identity, best template):\n");
+    if (rep.ranked.empty()) {
+        std::printf("   (gallery has no usable templates)\n");
+    }
+    for (const auto& c : rep.ranked) {
+        std::printf("   %.4f  name=%-18s templates=%d  id=%s\n",
+                    c.similarity, c.name.c_str(), c.template_count, c.face_id.c_str());
+    }
+
+    const auto& d = rep.decision;
+    std::printf("raw similarity : %.4f (threshold %.2f)\n",
+                d.raw_similarity, cfg.recognition_threshold);
+    if (d.normalized) {
+        std::printf("cohort         : n=%d median=%.4f mad=%.4f -> z=%.2f "
+                    "(threshold %.2f)\n",
+                    d.cohort_size, d.cohort_median, d.cohort_mad, d.z_score,
+                    cfg.z_threshold);
+    } else {
+        std::printf("cohort         : n=%d (needs >= %d -> normalisation skipped)\n",
+                    d.cohort_size, cfg.min_cohort);
+    }
+    std::printf("decision       : %s -- %s\n", d.accepted ? "ACCEPT" : "REJECT",
+                d.reason.c_str());
+    if (d.accepted) std::printf("=> %s\n", d.name.c_str());
+    return 0;
+}
+
 int cmd_web(const CliArgs& args) {
     // Forward the same --db / --faces-dir / --detection-model /
     // --recognition-model defaults so the web server and standalone share
@@ -494,14 +692,18 @@ int main(int argc, char** argv) {
     }
 
     try {
-        if      (args.command == "run")       return cmd_run(args);
-        else if (args.command == "add")       return cmd_add(args);
-        else if (args.command == "add-bulk")  return cmd_add_bulk(args);
-        else if (args.command == "backfill")  return cmd_backfill(args);
-        else if (args.command == "list")      return cmd_list(args);
-        else if (args.command == "remove")    return cmd_remove(args);
-        else if (args.command == "clear")     return cmd_clear(args);
-        else if (args.command == "web")       return cmd_web(args);
+        if      (args.command == "run")          return cmd_run(args);
+        else if (args.command == "cameras" ||
+                 args.command == "list-cameras") return cmd_cameras(args);
+        else if (args.command == "add")          return cmd_add(args);
+        else if (args.command == "add-bulk")     return cmd_add_bulk(args);
+        else if (args.command == "add-template") return cmd_add_template(args);
+        else if (args.command == "verify")       return cmd_verify(args);
+        else if (args.command == "backfill")     return cmd_backfill(args);
+        else if (args.command == "list")         return cmd_list(args);
+        else if (args.command == "remove")       return cmd_remove(args);
+        else if (args.command == "clear")        return cmd_clear(args);
+        else if (args.command == "web")          return cmd_web(args);
         else {
             std::fprintf(stderr, "Unknown command: %s\n", args.command.c_str());
             face_recognition_standalone::print_usage(argv[0]);
