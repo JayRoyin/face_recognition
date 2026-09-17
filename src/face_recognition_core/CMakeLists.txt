@@ -1,5 +1,7 @@
 cmake_minimum_required(VERSION 3.10)
-project(face_recognition_core)
+# VERSION matters: it is written into face_recognition_coreConfigVersion.cmake
+# so consumers can declare a minimum and get a clear error on a stale install.
+project(face_recognition_core VERSION 1.0.0)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -157,8 +159,16 @@ target_link_libraries(face_recognition_core
     Threads::Threads
     ${SQLITE3_LIBRARIES}
     ${UUID_LIBRARIES}
-    ${ONNXRUNTIME_LIBRARY}
     dl
+    PRIVATE
+    # ONNX Runtime is an IMPLEMENTATION detail: only face_detector.cpp /
+    # face_recognizer.cpp call it. Keeping it PUBLIC leaked the ONNX Runtime
+    # directory into every consumer's link line, and CMake then emitted
+    # `-Wl,-rpath-link,<onnxruntime dir>` for it. When that directory sits next
+    # to a different libcurl / libtiff (e.g. a conda prefix), `ld` resolves the
+    # system libgdal.so's versioned symbols against the wrong library and the
+    # link fails with `undefined reference to curl_*@CURL_OPENSSL_4`.
+    ${ONNXRUNTIME_LIBRARY}
 )
 
 # RPATH so the .so loads the vendored libsqlite3.so first, regardless of
@@ -180,13 +190,61 @@ if(_rpath_dirs)
     )
 endif()
 
-set_target_properties(face_recognition_core PROPERTIES VERSION "1.0.0" SOVERSION 1)
+set_target_properties(face_recognition_core PROPERTIES
+    VERSION   ${PROJECT_VERSION}
+    SOVERSION ${PROJECT_VERSION_MAJOR}
+)
+
+# -----------------------------------------------------------------------------
+# Install + export a CMake package.
+#
+# This is what makes the project actually SHARE one core library. The four
+# application modules (standalone / web / ros1 / ros2) all do
+# `find_package(face_recognition_core)` and link the SAME
+# <prefix>/lib/libface_recognition_core.so.
+#
+# They used to call add_subdirectory() on these sources instead, so every
+# consumer compiled its own copy (8 copies of the same .so were sitting in the
+# tree at one point). That is how a single bug fix could land in one binary and
+# be missing from another — which is exactly how a stale face_db_web kept
+# writing embeddings from an old feature space into the shared database.
+# -----------------------------------------------------------------------------
+add_library(face_recognition_core::face_recognition_core ALIAS face_recognition_core)
 
 install(TARGETS face_recognition_core
+    EXPORT  face_recognition_coreTargets
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
+    RUNTIME DESTINATION bin
+    INCLUDES DESTINATION include
 )
 
 install(DIRECTORY include/
     DESTINATION include
+)
+
+install(EXPORT face_recognition_coreTargets
+    FILE       face_recognition_coreTargets.cmake
+    NAMESPACE  face_recognition_core::
+    DESTINATION lib/cmake/face_recognition_core
+)
+
+include(CMakePackageConfigHelpers)
+
+configure_package_config_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/cmake/face_recognition_coreConfig.cmake.in"
+    "${CMAKE_CURRENT_BINARY_DIR}/face_recognition_coreConfig.cmake"
+    INSTALL_DESTINATION lib/cmake/face_recognition_core
+)
+
+write_basic_package_version_file(
+    "${CMAKE_CURRENT_BINARY_DIR}/face_recognition_coreConfigVersion.cmake"
+    VERSION       ${PROJECT_VERSION}
+    COMPATIBILITY SameMajorVersion
+)
+
+install(FILES
+    "${CMAKE_CURRENT_BINARY_DIR}/face_recognition_coreConfig.cmake"
+    "${CMAKE_CURRENT_BINARY_DIR}/face_recognition_coreConfigVersion.cmake"
+    DESTINATION lib/cmake/face_recognition_core
 )

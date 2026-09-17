@@ -20,6 +20,8 @@
 #include "face_recognition_ros2_interfaces/srv/remove_face.hpp"
 #include "face_recognition_ros2_interfaces/srv/list_faces.hpp"
 #include "face_recognition_ros2_interfaces/srv/clear_faces.hpp"
+#include "face_recognition_ros2_interfaces/srv/add_template.hpp"
+#include "face_recognition_ros2_interfaces/srv/verify.hpp"
 
 namespace face_recognition_ros2 {
 
@@ -39,6 +41,10 @@ private:
                           const std::shared_ptr<face_recognition_ros2_interfaces::srv::ListFaces::Response> res);
     void clearFacesCallback(const std::shared_ptr<face_recognition_ros2_interfaces::srv::ClearFaces::Request> req,
                            const std::shared_ptr<face_recognition_ros2_interfaces::srv::ClearFaces::Response> res);
+    void addTemplateCallback(const std::shared_ptr<face_recognition_ros2_interfaces::srv::AddTemplate::Request> req,
+                            const std::shared_ptr<face_recognition_ros2_interfaces::srv::AddTemplate::Response> res);
+    void verifyCallback(const std::shared_ptr<face_recognition_ros2_interfaces::srv::Verify::Request> req,
+                       const std::shared_ptr<face_recognition_ros2_interfaces::srv::Verify::Response> res);
 
     std::vector<uint8_t> base64Decode(const std::string& encoded);
 
@@ -53,6 +59,8 @@ private:
     rclcpp::Service<face_recognition_ros2_interfaces::srv::RemoveFace>::SharedPtr remove_srv_;
     rclcpp::Service<face_recognition_ros2_interfaces::srv::ListFaces>::SharedPtr list_srv_;
     rclcpp::Service<face_recognition_ros2_interfaces::srv::ClearFaces>::SharedPtr clear_srv_;
+    rclcpp::Service<face_recognition_ros2_interfaces::srv::AddTemplate>::SharedPtr add_template_srv_;
+    rclcpp::Service<face_recognition_ros2_interfaces::srv::Verify>::SharedPtr verify_srv_;
 
     float confidence_threshold_;
     std::string db_path_;

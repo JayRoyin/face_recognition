@@ -149,21 +149,57 @@ cd ~/Royin_Project/face_recognition
 | `./build.sh STANDALONE` | CORE + 非 ROS 实时识别可执行 |
 | `./build.sh WEB` | CORE + Web 后台 |
 | `./build.sh ALL` | 全部模块 |
+| `./build.sh TEST` | 运行 `tests/regression.sh` 回归测试（只需 STANDALONE 产物，无需 ROS） |
 | `./build.sh CLEAN` | 清理 `build/` `install/` `log/` |
 
 构建日志统一写入项目根目录 `build.log`，失败时优先查看日志最后一段。
 
-### 构建产物
+`./build.sh TEST` 运行 `tests/regression.sh`：只调用**非 ROS** 的
+`face_recognition_app`，因此不需要任何 ROS 环境；每个用例都在自己的临时目录里创建
+独立的人脸库，**不会读写你正在使用的 `/tmp/face_db`**。它断言的不变量是：
+
+| 用例 | 断言 | 曾能捕获的问题 |
+|---|---|---|
+| T1 特征指纹守卫 | 库缺失指纹时写入；指纹过期时必须报错并给出修复命令 | 换前端 / 归一化 / 模型后静默失效 |
+| T2 自身 rank-1 | 每个已入库的人 `verify` 自己时必须排第一且判 ACCEPT | **SCRFD 解码错误**（当时本人 0.64 < 陌生 0.73） |
+| T3 余量 | 最差"本人"分数 > 最好"冒名"分数，且后者低于默认阈值 | 特征区分度崩塌 |
+| T4 模板往返 | `add-template` 后模板数 = 2；`backfill --all` 后排名不变 | 前端混用、重算不一致 |
+| T5 坏输入 | 非图片文件不得崩溃（段错误） | 解码路径健壮性 |
+
+未覆盖：ROS1/ROS2 运行时行为、Web HTTP 接口、`run` 的实时视频通路 —— 这些仍需按
+[release_guide.md](release_guide.md) 的清单手动验证。
+
+### 构建产物与布局
+
+所有中间产物集中在仓库根的 `build/<目标>/`，所有最终产物集中在 `install/`；
+**`src/` 下不会出现任何构建目录**。
 
 ```
-install/
-├── vendored/                      # 项目内 SQLite3（含 R-Tree/GEOPOLY）
-├── face_recognition_core/         # 核心库
-├── face_recognition_ros2/         # ROS2 节点 + viewer + stream server
-└── bin/face_db_web                # Web 服务可执行
+build/                             # 中间构建树（可整目录删除）
+├── core/                          #   face_recognition_core 的构建树
+├── web/                           #   face_db_web 的构建树
+├── standalone/                    #   face_recognition_app 的构建树
+├── vendored/                      #   vendored SQLite3 / SpatiaLite
+└── ros1/ ros2/                    #   catkin / colcon 工作空间
 
-src/face_recognition_standalone/build/face_recognition_app   # 非 ROS 可执行
+install/                           # 唯一产物目录：用户只从这里取二进制
+├── bin/
+│   ├── face_recognition_app       # 非 ROS 实时识别 CLI
+│   └── face_db_web                # Web 人脸库后台
+├── lib/libface_recognition_core.so*      # 核心算法库
+├── include/face_recognition_core/*.hpp   # 对外头文件
+├── vendored/                      # 项目内 SQLite3（含 R-Tree / GEOPOLY）
+├── share/face_db_web/             # Web 页面模板
+└── ros2/                          # ROS2 colcon 安装空间（source install/ros2/setup.bash）
 ```
+
+> `install/` 下的产物**自带 RPATH**，可直接运行，无需手工设置 `LD_LIBRARY_PATH`：
+>
+> ```bash
+> ./install/bin/face_recognition_app help
+> ```
+
+每次构建结束，`build.sh` 会把本次识别到的产物路径打印出来，便于确认。
 
 ---
 
@@ -178,7 +214,7 @@ source scripts/setup_env.sh
 
 该脚本会：
 
-1. `source install/setup.bash`（colcon overlay，幂等）
+1. `source install/ros2/setup.bash`（colcon overlay，幂等）
 2. 把 `install/vendored/lib` 前置到 `LD_LIBRARY_PATH` 与 `PKG_CONFIG_PATH`
 3. 若 `models/` 存在标准模型，自动导出 `FACE_DETECTION_MODEL` /
    `FACE_RECOGNITION_MODEL`，供 `face_db_web` 录入时提取特征
@@ -217,9 +253,9 @@ ls -l models/det_10g.onnx models/w600k_r50.onnx
 # ② 构建「Web 人脸库后台」与「standalone 实时识别」（无需任何 ROS 环境）
 ./build.sh WEB
 ./build.sh STANDALONE
-# 等价于：make -C src/face_recognition_standalone/build -j$(nproc)
+# 等价于：make -C build/standalone -j$(nproc)
 
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 
 # ③ 启动 Web 人脸库后台（与实时识别共用同一个 SQLite 库）
 $APP web --port 8080

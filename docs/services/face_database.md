@@ -55,6 +55,13 @@ public:
 
     // --- 队列归一化 ---------------------------------------------------------
     void setCohortEmbeddings(std::vector<std::vector<float>> cohort);
+
+    // --- 库级元数据（当前只有特征指纹 feature_space_id）---------------------
+    // metadata 表记录"库内特征是用哪套配方算出来的"，启动时比对，不一致即告警。
+    // 没有它，换前端 / 归一化 / 模型后的静默失效无法与"模型变差"区分。
+    // 详见 [../module/core.md](../module/core.md) 的「特征指纹」。
+    bool set_meta(const std::string& key, const std::string& value);
+    std::string get_meta(const std::string& key) const;
     void setNormalizationDefaults(float z_threshold, int min_cohort, bool enabled);
     int  cohortSize() const;
 
@@ -203,7 +210,7 @@ Z-norm / T-norm 的同一思路。
 >
 > ```bash
 > # 用任意人脸图片目录建一个冒充者库（只用于归一化，不参与识别）
-> APP=./src/face_recognition_standalone/build/face_recognition_app
+> APP=./install/bin/face_recognition_app
 > $APP add-bulk --dir ./other_faces --db /tmp/face_db/cohort.db
 > # 之后运行识别时挂上它
 > $APP run --source 0 --cohort-db /tmp/face_db/cohort.db

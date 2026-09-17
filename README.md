@@ -1,20 +1,23 @@
-<div align="center">
-<img src="docs/img/logo.jpg" alt="项目Logo" width="500"/>
+<!-- <div align="center">
+<img src="docs/img/logo.jpg" alt="项目Logo" width="500"/> -->
 
 # Face Recognition Node
 
 ## 本地离线实时人脸检测与识别系统，四种运行形态复用同一核心算法库
+</div>
 
 ---
-[![C++](https://img.shields.io/badge/C++-17-00599C?logo=cplusplus&logoColor=fff)](#)
-[![Ubuntu](https://img.shields.io/badge/Ubuntu-20.04%20%7C%2022.04-E95420?logo=ubuntu&logoColor=white)](#)
-[![ROS2](https://img.shields.io/badge/ROS2-Humble-22314E?logo=ros&logoColor=white)](#)
-[![ROS1](https://img.shields.io/badge/ROS1-Noetic-22314E?logo=ros&logoColor=white)](#)
-[![OpenCV](https://img.shields.io/badge/OpenCV-%E2%89%A5%204.5-5C3EE8?logo=opencv&logoColor=white)](#)
-[![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-1.16-005CED?logo=onnx&logoColor=white)](#)
-[![SQLite3](https://img.shields.io/badge/SQLite3-vendored%20(rtree)-003B57?logo=sqlite&logoColor=white)](#)
-[![Platform](https://img.shields.io/badge/Platform-x86__64%20%7C%20aarch64%2FJetson-green.svg)](#)
-</div>
+<p>
+  <img src="https://img.shields.io/badge/C++-17-00599C?logo=cplusplus&logoColor=fff">
+  <img src="https://img.shields.io/badge/Ubuntu-20.04%20%7C%2022.04-E95420?logo=ubuntu&logoColor=white">
+  <img src="https://img.shields.io/badge/ROS2-Humble-22314E?logo=ros&logoColor=white">
+  <img src="https://img.shields.io/badge/ROS1-Noetic-22314E?logo=ros&logoColor=white">
+  <img src="https://img.shields.io/badge/OpenCV-%E2%89%A5%204.5-5C3EE8?logo=opencv&logoColor=white">
+  <img src="https://img.shields.io/badge/ONNX%20Runtime-1.16-005CED?logo=onnx&logoColor=white">
+  <img src="https://img.shields.io/badge/SQLite3-vendored%20(rtree)-003B57?logo=sqlite&logoColor=white">
+  <img src="https://img.shields.io/badge/Platform-x86__64%20%7C%20aarch64%2FJetson-green.svg">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache--2.0-blue.svg"></a>
+</p>
 
 ## 项目介绍
 
@@ -81,10 +84,10 @@ cd face_recognition
 # 3. 构建「Web 人脸库后台」与「非 ROS 实时识别程序」
 ./build.sh WEB
 ./build.sh STANDALONE
-# 等价于：make -C src/face_recognition_standalone/build -j$(nproc)
+# 等价于：make -C build/standalone -j$(nproc)
 
 # 4. 启动 Web 人脸库后台（与实时识别共用同一个 SQLite 库）
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 $APP web --port 8080
 # 也可直接启动：
 # ./install/bin/face_db_web --port 8080 \
@@ -113,14 +116,17 @@ $APP run --source 0
 > `--camera` 会用 `/dev/video*` 校验，写错立即报错并提示可用编号；
 > 720p 以上会自动协商 MJPG，避免未经压缩的 YUYV 掉到个位数帧率。
 
+**Web 端demo显示效果：**
+<div align="center">
+<img src="docs/img/web_import.png" alt="web_import" width="500"/>
+</div>
+
 > Web 端录入时**已完成人脸检测与特征提取**，`embedding` 随记录一起写入数据库，
 > 因此录入完直接打开实时识别即可，无需再做任何额外操作。
 >
 > 若录入时提示 `Refused: no embedding could be extracted`，说明 Web 服务没找到模型：
 > 在项目根目录启动，或按上面注释显式传 `--detection-model` / `--recognition-model`。
 >
-> **需要给同一个人补一枪**（例如补一张不戴眼镜的照片，提高召回）时用 CLI：
-> `$APP list` 取到 id，再 `$APP add-template --id <uuid> --image <照片>`
 > —— 详见 [模块快速开始](./docs/module/quick_start.md) 与
 > [standalone 使用文档](./docs/module/standalone.md)。
 
@@ -186,20 +192,10 @@ git tag -a vX.Y.Z -m "release vX.Y.Z"
 
 ```
 face_recognition/
-├── build.sh                        # 一键构建入口（MODELS/CORE/ROS1/ROS2/STANDALONE/WEB/ALL/CLEAN）
-├── models/                         # ONNX 模型（检测/识别/备用），见 models/README.md
-├── config/                         # 全局配置与参数
-├── docs/                           # 全量项目文档（入口 docs/README.md）
-│   ├── setup.md                    # 开发环境搭建与首次跑通
-│   ├── architecture.md             # 分层、数据流、存储模型、关键设计决策
-│   ├── release_guide.md            # 版本与发布流程
-│   ├── protocol/                   # 接口、协议、数据库 schema、配置项
-│   ├── services/                   # 核心算法模块（检测 / 识别 / 人脸库）
-│   ├── module/                     # 专项模块（core / standalone / ros1 / ros2 / web）
-│   ├── peripheral/                 # 第三方依赖与平台适配
-│   ├── FAQ/                        # 常见问题排查
-│   └── img/                        # 文档与 README 使用的图片资源
-├── src/
+├── LICENSE                         # Apache-2.0
+├── build.sh                        # 唯一构建入口（MODELS/CORE/ROS1/ROS2/STANDALONE/WEB/ALL/CLEAN）
+│
+├── src/                            # ★ 只放源码：构建产物一律不落在包目录里
 │   ├── face_recognition_core/      # 核心算法库：FaceDetector / FaceRecognizer / FaceDatabase
 │   │   ├── include/face_recognition_core/
 │   │   │   ├── types.hpp           # 数据类型 + compute_similarity
@@ -209,21 +205,79 @@ face_recognition/
 │   │   └── src/
 │   ├── face_recognition_standalone/# 零 ROS 依赖的实时识别 CLI
 │   │   ├── include/face_recognition_standalone/
-│   │   ├── src/                    # main / cli / recognition_pipeline / video_source
-│   │   └── build/face_recognition_app
+│   │   └── src/                    # main / cli / recognition_pipeline / video_source / camera
 │   ├── face_recognition_ros2/      # ROS2 节点（node / viewer / face_stream_server）
 │   ├── face_recognition_ros2_interfaces/   # ROS2 msg / srv
 │   ├── face_recognition_ros1/      # ROS1 节点
 │   ├── face_recognition_ros1_interfaces/   # ROS1 msg / srv
 │   └── face_db_web/                # Web 人脸库后台（HTTP + 页面）
+│
+├── build/                          # ★ 中间构建树，按目标分目录（不纳入版本库）
+│   ├── core/  web/  standalone/    #   各 CMake 目标的构建树
+│   ├── vendored/                   #   vendored SQLite3 / SpatiaLite
+│   └── ros1/  ros2/                #   catkin / colcon 工作空间
+│
+├── install/                        # ★ 唯一产物目录：用户只从这里取二进制
+│   ├── bin/                        #   face_recognition_app / face_db_web
+│   ├── lib/                        #   libface_recognition_core.so*
+│   ├── include/face_recognition_core/   # 对外头文件
+│   ├── vendored/                   #   项目内 SQLite3（R-Tree / GEOPOLY）
+│   ├── share/face_db_web/          #   Web 页面模板
+│   └── ros2/                       #   ROS2 colcon 安装空间（与上面隔离）
+│
+├── models/                         # ONNX 模型（检测/识别/备用），见 models/README.md
+├── docs/                           # 全量项目文档（入口 docs/README.md）
+│   ├── setup.md                    # 开发环境搭建与首次跑通
+│   ├── architecture.md             # 分层、数据流、存储模型、关键设计决策
+│   ├── release_guide.md            # 版本与发布流程
+│   └── protocol/ services/ module/ peripheral/ FAQ/ img/
 ├── scripts/                        # setup_env.sh / download_models.py 等辅助脚本
-├── third_party/                    # vendored 依赖（sqlite3 / spatialite / libmicrohttpd）
-└── install/                        # 构建安装产物（core 库、vendored 依赖、Web 可执行）
+└── third_party/                    # vendored 依赖源码（sqlite3 / spatialite / libmicrohttpd）
 ```
+
+## 参考项目与致谢
+
+本项目的算法前端、依赖与运行生态大量借鉴 / 依赖以下开源工作，特此致谢。
+**逐文件的上下游对照表**（含已确认的差异与待办）见
+[third_party/REFERENCE.md](third_party/REFERENCE.md)。
+
+### 论文 / 算法出处
+
+- **ArcFace** — Deng et al., *ArcFace: Additive Angular Margin Loss for Deep Face Recognition*，<https://arxiv.org/abs/1801.07698>
+- **SCRFD** — Guo et al., *Sample and Computation Redistribution for Efficient Face Detection*，<https://arxiv.org/abs/2105.04714>
+- **RetinaFace** — Deng et al., *RetinaFace: Single-stage Dense Face Localisation in the Wild*，<https://arxiv.org/abs/1905.00641>
+- **SFace** — Zhong et al., *SFace: Sigmoid-Constrained Hypersphere Loss for Robust Face Recognition*，<https://arxiv.org/abs/2205.12041>
+- **YuNet** — Wu et al., *YuNet: A Tiny Millisecond-level Face Detector*, Machine Intelligence Research 2023，<https://link.springer.com/article/10.1007/s11633-023-1423-y>
+
+> 参考实现（`insightface/`、`opencv_zoo/`）只用于比对定位偏差，**不参与构建**：
+> 用 `./third_party/fetch_reference.sh` 拉取，详细说明见 [third_party/README.md](third_party/README.md)。
 
 ## 许可证
 
-本项目为公司内部自研项目，**仅限内部使用**。未经授权不得对外分发、公开或用于商业转售。
-第三方依赖遵循其各自的开源许可：SQLite3（Public Domain）、OpenCV（Apache-2.0）、
-ONNX Runtime（MIT）、libmicrohttpd（LGPL-2.1）、InsightFace 系列模型权重
-（仅供研究用途，商用请自行确认许可）。
+本项目以 **[Apache License 2.0](LICENSE)** 开源发布：  
+```text
+Copyright 2026 Face Recognition Node Authors
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+```
+
+### 第三方组件与模型权重
+
+Apache-2.0 只覆盖**本仓库自行编写的代码**。第三方依赖、以及**下载**得到的模型权重（`models/` 不在仓库内）各自遵循其上游许可：
+- **SQLite3（Public Domain）**
+- **OpenCV（Apache-2.0）**
+- **ONNX Runtime（MIT）**
+- **libmicrohttpd（LGPL-2.1+）**
+- **SpatiaLite（MPL-1.1 / GPL-2.0+）**
+- **util-linux（BSD-3-Clause）**
+- **Ultralytics YOLOv8（AGPL-3.0）**
+
+> ⚠️ **默认模型权重不可商用**：`det_10g.onnx` / `w600k_r50.onnx` 来自 InsightFace 的
+> `buffalo_l` 包，上游声明**仅供非商业研究**。若要把本项目用于商业场景，请改用
+> Apache-2.0 的 [OpenCV Zoo](https://github.com/opencv/opencv_zoo)（YuNet + SFace）
+> 或自行训练 / 采购授权的模型，再按 [常见问题排查](docs/FAQ/troubleshooting.md) 的
+> 流程重跑 `backfill --all` 重建特征库。

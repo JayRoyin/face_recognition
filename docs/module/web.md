@@ -79,7 +79,7 @@ mkdir -p /tmp/face_db/faces
 已经存在的 `NULL` 记录可以直接重建（缩略图已存档，无需重新上传）：
 
 ```bash
-./src/face_recognition_standalone/build/face_recognition_app backfill --all
+./install/bin/face_recognition_app backfill --all
 ```
 
 ### 2.2 环境变量回退
@@ -225,7 +225,7 @@ curl -X POST http://localhost:8080/api/faces/clear
 `--detection-model` / `--recognition-model` 给 `face_db_web`：
 
 ```bash
-./src/face_recognition_standalone/build/face_recognition_app web --port 8080
+./install/bin/face_recognition_app web --port 8080
 # 等价于：
 #   ./install/bin/face_db_web --port 8080 \
 #       --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces \

@@ -1,0 +1,18 @@
+# Score a face image against the whole gallery WITHOUT enrolling it.
+#
+# Equivalent to `face_recognition_app verify --image <file>`: it reports the full
+# ranking plus the decision, which is what you need to tune a threshold or to
+# find out *why* a face is being rejected (front-end/quality gate, threshold, or
+# genuinely a different person).
+string image_data   # base64-encoded JPEG/PNG
+float32 threshold    # <= 0 means "use the node's confidence_threshold parameter"
+---
+bool success
+string message
+bool matched
+string id
+string name
+float32 score        # raw cosine against the best template of the winning identity
+float32 threshold    # threshold actually applied
+string decision      # ACCEPT / REJECT / NO_FACE / ERROR
+FaceInfo[] candidates   # every identity, best score first

@@ -39,7 +39,7 @@ source devel/setup.bash
 
 ```bash
 source /opt/ros/noetic/setup.bash
-source src/face_recognition_ros1/devel/setup.bash
+source build/ros1/devel/setup.bash
 
 roslaunch face_recognition_ros1 face_recognition.launch \
     detection_model:=$PWD/models/det_10g.onnx \
@@ -56,7 +56,7 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 |---|---|---|
 | `image_topic` | `/image_raw` | 输入图像话题 |
 | `result_topic` | `/face/recognition_result` | 识别结果话题 |
-| `confidence_threshold` | `0.7` | 识别相似度阈值 |
+| `confidence_threshold` | `0.5` | 识别相似度阈值 |
 | `db_path` | `/tmp/face_db/faces.db` | SQLite 数据库路径 |
 | `faces_dir` | `/tmp/face_db/faces` | 缩略图目录 |
 | `detection_model` | `/models/det_10g.onnx` | 检测模型 |
@@ -77,7 +77,7 @@ face_recognition_node:
   ros__parameters:
     image_topic: "/image_raw"
     result_topic: "/face/recognition_result"
-    confidence_threshold: 0.7
+    confidence_threshold: 0.5
     db_path: "/tmp/face_db/faces.db"
     faces_dir: "/tmp/face_db/faces"
     detection_model: "/models/det_10g.onnx"
@@ -103,6 +103,8 @@ face_recognition_node:
 | `/face_db/remove` | `RemoveFace` | 按 ID 删除 |
 | `/face_db/list` | `ListFaces` | 列出全部 |
 | `/face_db/clear` | `ClearFaces` | 清空 |
+| `/face_db/add_template` | `AddTemplate` | 给已有身份追加一"枪"（多模板） |
+| `/face_db/verify` | `Verify` | 对全库打分并返回判定（不入库） |
 
 字段定义见 [../protocol/ros_interfaces.md](../protocol/ros_interfaces.md)。
 
@@ -151,6 +153,12 @@ map_location: '5F-A区'"
 rosservice call /face_db/list
 rosservice call /face_db/remove "id: '<UUID>'"
 rosservice call /face_db/clear
+
+# 追加一"枪"（多模板）与校验（入参为 base64 图片）
+rosservice call /face_db/add_template "id: '<UUID>'
+image_data: '<BASE64>'"
+rosservice call /face_db/verify "image_data: '<BASE64>'
+threshold: 0.0"
 ```
 
 ---

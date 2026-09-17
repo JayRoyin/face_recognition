@@ -87,6 +87,17 @@ public:
     bool update_embedding(const std::string& face_id,
                           const std::vector<float>& embedding);
 
+    // --- gallery metadata ----------------------------------------------------
+    /**
+     * Gallery-wide key/value facts. Used to record which feature space the
+     * stored embeddings belong to (see feature_space.hpp), so that a change of
+     * front-end / normalisation / model is DETECTED instead of silently making
+     * every match worse.
+     */
+    bool set_meta(const std::string& key, const std::string& value);
+    /** Read it back. Returns an empty string when the key is absent. */
+    std::string get_meta(const std::string& key) const;
+
 private:
     class Impl;
     std::unique_ptr<Impl> pImpl;

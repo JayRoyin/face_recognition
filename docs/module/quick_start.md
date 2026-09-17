@@ -49,7 +49,7 @@ mkdir -p /tmp/face_db/faces
 ./build.sh CORE
 ```
 
-产物：`src/face_recognition_core/build/libface_recognition_core.so*`
+产物：`build/core/libface_recognition_core.so*`
 
 对外三类能力（C++ API）：
 
@@ -68,7 +68,7 @@ FaceDatabase   database;   database.initialize("/tmp/face_db/faces.db", "/tmp/fa
 ```bash
 ./build.sh STANDALONE
 
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 
 # ① 实时识别（默认 USB 摄像头 /dev/video0）
 $APP run --source 0 --input-size 320
@@ -108,7 +108,7 @@ ros2 launch face_recognition_ros2 usb_cam_face.launch.py
 
 ```bash
 ./build.sh ROS1
-source src/face_recognition_ros1/devel/setup.bash
+source build/ros1/devel/setup.bash
 
 roslaunch face_recognition_ros1 face_recognition.launch \
     detection_model:=$PWD/models/det_10g.onnx \
@@ -155,7 +155,7 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 ./build.sh STANDALONE
 
 # 终端 A：启动 Web 录入（录入时即完成检测 + 提特征）
-./src/face_recognition_standalone/build/face_recognition_app web --port 8080
+./install/bin/face_recognition_app web --port 8080
 
 # 浏览器打开 http://localhost:8080/ ，在 “Add Face” 表单传图：
 #   · Name 必填（可另填 Title / Scene / Map Location）
@@ -164,7 +164,7 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 #   · 下方 Face List 实时显示已录人脸
 
 # 终端 B：实时识别（与 Web 共享同一个 DB，录完即可识别）
-./src/face_recognition_standalone/build/face_recognition_app run --source 0 --input-size 320
+./install/bin/face_recognition_app run --source 0 --input-size 320
 ```
 
 > `--detect-every-n` 默认即为 `2`，`--recognition-threshold` 默认 `0.5`，
@@ -175,7 +175,7 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 `add-template`（Web 页面目前只提供新增 / 删除 / 清空）：
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 $APP list                                                    # 取到 <face_id>
 $APP add-template --id <face_id> --image ~/photos/alice2.jpg  # 补一枪
 $APP list                                                    # templates 变成 2

@@ -3,7 +3,7 @@
     image_topic: "/image_raw"
     result_topic: "/face/recognition_result"
 
-    confidence_threshold: 0.7
+    confidence_threshold: 0.5
     nms_threshold: 0.5
 
     db_path: "/tmp/face_db/faces.db"

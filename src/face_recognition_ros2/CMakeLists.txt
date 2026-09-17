@@ -15,13 +15,14 @@ find_package(builtin_interfaces REQUIRED)
 find_package(face_recognition_ros2_interfaces REQUIRED)
 find_package(OpenCV 4.5 REQUIRED)
 
-# Core library
-set(FACE_RECOGNITION_CORE_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../face_recognition_core)
-if(EXISTS ${FACE_RECOGNITION_CORE_DIR})
-  add_subdirectory(${FACE_RECOGNITION_CORE_DIR} face_recognition_core_build)
-else()
-  find_package(face_recognition_core REQUIRED)
-endif()
+# Core library: link the one ./build.sh CORE installed into install/lib.
+#
+# This used to add_subdirectory() the core sources, which (a) compiled a second
+# copy of the same library on every build — colcon already built the core as a
+# package — and (b) let this node and face_recognition_app drift onto different
+# builds of the core. build.sh passes -DCMAKE_PREFIX_PATH=<repo>/install so the
+# package resolves without the core being a colcon package.
+find_package(face_recognition_core 1.0 REQUIRED)
 
 include_directories(
   include
@@ -52,8 +53,14 @@ ament_target_dependencies(face_recognition_node
 )
 
 target_link_libraries(face_recognition_node
-  face_recognition_core
+  face_recognition_core::face_recognition_core
   ${OpenCV_LIBS}
+)
+
+# The node is installed to install/ros2/<pkg>/lib/<pkg>/, while the shared core
+# library lives in the plain-CMake install root, four levels up.
+set_target_properties(face_recognition_node PROPERTIES
+  INSTALL_RPATH "$ORIGIN/../../../../lib"
 )
 
 # ---------------------------------------------------------------------------

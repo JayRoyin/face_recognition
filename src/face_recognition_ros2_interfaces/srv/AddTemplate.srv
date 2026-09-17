@@ -1,0 +1,12 @@
+# Attach an extra "shot" of the SAME person to an existing identity.
+#
+# Multi-template galleries matter whenever appearance changes: glasses on/off,
+# a different hairstyle, a different camera/lighting. With a single template the
+# owner can then score *lower* than an unrelated face, and no threshold fixes it
+# (see the recogniser notes: a second template of the same person is the cure).
+string id           # target identity, as returned by AddFace / ListFaces
+string image_data   # base64-encoded JPEG/PNG of the same person
+---
+bool success
+string message
+int32 templates     # total templates on this identity after the call

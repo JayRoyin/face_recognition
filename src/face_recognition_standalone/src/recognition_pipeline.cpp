@@ -1,5 +1,8 @@
 #include "face_recognition_standalone/recognition_pipeline.hpp"
 
+#include "face_recognition_core/embedding_policy.hpp"
+#include "face_recognition_core/feature_space.hpp"
+
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -69,6 +72,33 @@ bool RecognitionPipeline::initialize(const PipelineConfig& cfg, std::string& err
     database_->setNormalizationDefaults(cfg_.z_threshold, cfg_.min_cohort,
                                        cfg_.cohort_norm);
 
+    // Record which feature space this gallery belongs to, and complain loudly if
+    // it was produced by a different recipe. Without this, switching front-end /
+    // normalisation / model silently degrades every comparison and is
+    // indistinguishable from a broken model. See feature_space.hpp.
+    {
+        const std::string current_fs =
+            face_recognition::feature_space_id(cfg_.recognition_model);
+        std::string stored_fs;
+        const auto status = face_recognition::check_feature_space(
+            *database_, current_fs, &stored_fs);
+
+        if (status == face_recognition::FeatureSpaceStatus::MISMATCH) {
+            std::fprintf(stderr,
+                "\n[WARN] gallery feature space mismatch\n"
+                "         stored : %s\n"
+                "         current: %s\n"
+                "       The stored embeddings came from a different recipe, so "
+                "comparing\n"
+                "       against them is meaningless. Rebuild with:\n"
+                "           face_recognition_app backfill --all\n\n",
+                stored_fs.c_str(), current_fs.c_str());
+        } else if (status == face_recognition::FeatureSpaceStatus::STAMPED) {
+            std::printf("[INFO] gallery feature space recorded: %s\n",
+                        current_fs.c_str());
+        }
+    }
+
     // Optional external impostor cohort, used for score normalisation.
     if (!cfg_.cohort_db.empty()) {
         auto cohort = std::make_unique<face_recognition::FaceDatabase>();
@@ -118,30 +148,20 @@ bool RecognitionPipeline::prepare_embedding(const cv::Mat& image,
                                             const face_recognition::FaceDetection& det,
                                             std::vector<float>& embedding,
                                             std::string& reason) {
-    const int short_side = static_cast<int>(
-        std::min(det.bbox.width, det.bbox.height));
-    if (short_side < cfg_.min_face_size) {
-        char buf[96];
-        std::snprintf(buf, sizeof(buf), "too small (%dx%d < %d px)",
-                      det.bbox.width, det.bbox.height, cfg_.min_face_size);
-        reason = buf;
-        return false;
-    }
+    // The gate itself lives in the core (embedding_policy.hpp) so that every
+    // other writer — face_db_web, the ROS nodes, backfill — applies exactly the
+    // same rules. This function is now just the pipeline's adapter onto it.
+    face_recognition::EmbeddingPolicy policy;
+    policy.min_face_size     = cfg_.min_face_size;
+    policy.require_alignment = cfg_.align;
+    policy.allow_unaligned   = cfg_.allow_unaligned;
 
-    bool used_alignment = false;
-    embedding = recognizer_->extract_embedding(image, det.bbox, det.landmarks,
-                                              &used_alignment);
-    if (embedding.empty()) {
-        reason = "no embedding";
+    auto outcome = face_recognition::make_embedding(*recognizer_, image, det, policy);
+    if (!outcome.ok()) {
+        reason = outcome.reject_reason;
         return false;
     }
-
-    // Refuse to mix front-ends: a bbox-crop embedding is not comparable with
-    // the aligned embeddings that a normal gallery contains.
-    if (cfg_.align && !used_alignment && !cfg_.allow_unaligned) {
-        reason = "no landmarks";
-        return false;
-    }
+    embedding = std::move(outcome.embedding);
     return true;
 }
 

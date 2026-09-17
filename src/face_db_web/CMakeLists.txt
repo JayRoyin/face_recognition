@@ -14,19 +14,16 @@ find_package(PkgConfig REQUIRED)
 pkg_check_modules(MICROHTTPD REQUIRED libmicrohttpd)
 
 # ---------------------------------------------------------------------------
-# Resolve the face_recognition_core directory and prefer in-tree subdirectory
-# build (so the same project-local SQLite3 vendored by build.sh is used).
+# Core library.
+#
+# find_package (NOT add_subdirectory): this binary must use the SAME shared
+# library as face_recognition_app. A stale face_db_web that compiled its own
+# copy of the core once wrote embeddings from an old feature space into the
+# shared database, and nothing could detect it.
+#
+# Configure with -DCMAKE_PREFIX_PATH=<repo>/install (build.sh passes it).
 # ---------------------------------------------------------------------------
-set(_core_src ${CMAKE_CURRENT_SOURCE_DIR}/../face_recognition_core)
-set(FACE_RECOGNITION_CORE_DIR ${_core_src})
-
-if(EXISTS ${_core_src}/CMakeLists.txt)
-    add_subdirectory(${_core_src} face_recognition_core_build)
-    set(_core_target face_recognition_core)
-else()
-    find_package(face_recognition_core REQUIRED)
-    set(_core_target face_recognition_core::face_recognition_core)
-endif()
+find_package(face_recognition_core 1.0 REQUIRED)
 
 set(SOURCES
     src/main.cpp
@@ -38,13 +35,12 @@ add_executable(face_db_web ${SOURCES})
 
 target_include_directories(face_db_web PRIVATE
   include
-  ${FACE_RECOGNITION_CORE_DIR}/include
   ${OpenCV_INCLUDE_DIRS}
   ${MICROHTTPD_INCLUDE_DIRS}
 )
 
 target_link_libraries(face_db_web
-  ${_core_target}
+  face_recognition_core::face_recognition_core
   ${OpenCV_LIBS}
   ${MICROHTTPD_LIBRARIES}
   dl
@@ -54,7 +50,6 @@ target_link_libraries(face_db_web
 # even when launched directly without LD_LIBRARY_PATH.
 set_target_properties(face_db_web PROPERTIES
   INSTALL_RPATH "$ORIGIN/../lib"
-  BUILD_RPATH   "${CMAKE_BINARY_DIR}/face_recognition_core_build"
 )
 
 install(TARGETS face_db_web

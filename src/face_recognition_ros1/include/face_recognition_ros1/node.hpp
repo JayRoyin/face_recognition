@@ -22,6 +22,8 @@
 #include "face_recognition_ros1_interfaces/RemoveFace.h"
 #include "face_recognition_ros1_interfaces/ListFaces.h"
 #include "face_recognition_ros1_interfaces/ClearFaces.h"
+#include "face_recognition_ros1_interfaces/AddTemplate.h"
+#include "face_recognition_ros1_interfaces/Verify.h"
 
 namespace face_recognition_ros1 {
 
@@ -43,6 +45,10 @@ private:
                            face_recognition_ros1_interfaces::ListFaces::Response& res);
     bool clearFacesCallback(face_recognition_ros1_interfaces::ClearFaces::Request& req,
                             face_recognition_ros1_interfaces::ClearFaces::Response& res);
+    bool addTemplateCallback(face_recognition_ros1_interfaces::AddTemplate::Request& req,
+                             face_recognition_ros1_interfaces::AddTemplate::Response& res);
+    bool verifyCallback(face_recognition_ros1_interfaces::Verify::Request& req,
+                        face_recognition_ros1_interfaces::Verify::Response& res);
 
     std::vector<uint8_t> base64Decode(const std::string& encoded);
     std::string base64Encode(const std::vector<uint8_t>& data);
@@ -61,6 +67,8 @@ private:
     ros::ServiceServer remove_srv_;
     ros::ServiceServer list_srv_;
     ros::ServiceServer clear_srv_;
+    ros::ServiceServer add_template_srv_;
+    ros::ServiceServer verify_srv_;
 
     float confidence_threshold_;
     std::string db_path_;

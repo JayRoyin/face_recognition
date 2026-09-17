@@ -63,7 +63,7 @@ install/bin/face_db_web
 install/face_recognition_ros2/lib/face_recognition_ros2/face_recognition_node
 install/face_recognition_ros2/lib/face_recognition_ros2/face_viewer_node
 install/face_recognition_ros2/lib/face_recognition_ros2/face_stream_server
-src/face_recognition_standalone/build/face_recognition_app
+install/bin/face_recognition_app
 src/face_recognition_ros1/devel/lib/face_recognition_ros1/face_recognition_node
 ```
 
@@ -83,7 +83,7 @@ ros2 launch face_recognition_ros2 usb_cam_face.launch.py
 curl -s http://localhost:8090/healthz     # → ok
 
 # ③ CLI 全流程
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 $APP add --image alice.jpg --name alice
 $APP list                                  # emb=yes
 $APP remove --id <uuid>
@@ -158,7 +158,7 @@ git push origin :refs/tags/v1.0.0    # 删除远端标签（谨慎）
 | vendored SQLite3 | `install/vendored/lib/libsqlite3.so*` | 含 R-Tree / GEOPOLY |
 | ROS2 节点 | `install/face_recognition_ros2/lib/...` | 含 viewer / stream server |
 | ROS1 节点 | `src/face_recognition_ros1/devel/lib/...` | catkin 产物 |
-| standalone | `src/face_recognition_standalone/build/face_recognition_app` | 零 ROS 依赖 |
+| standalone | `install/bin/face_recognition_app` | 零 ROS 依赖 |
 | Web 后台 | `install/bin/face_db_web` | 含 `share/face_db_web/templates` |
 | 模型 | `models/*.onnx` | 由 `./build.sh MODELS` 下载，**不纳入版本控制** |
 
@@ -175,10 +175,16 @@ git push origin :refs/tags/v1.0.0    # 删除远端标签（谨慎）
 3. `source scripts/setup_env.sh && sqlite3 :memory: "PRAGMA compile_options;" | grep -i rtree`（vendored 依赖门禁）
 4. 打标签后自动生成 Release Notes（列出 `MAJOR/MINOR/PATCH` 变更分类）
 
-已知待办项（历史遗留）：`./build.sh ALL` 在部分子目标失败时仍可能报告整体成功；
-核心算法、ROS 节点与 Web 后台目前**没有自动化回归测试**。发版前请手动走完本文件
-的检查清单，并覆盖 [FAQ/troubleshooting.md §四](FAQ/troubleshooting.md#四离线功能验证)
-的离线验证路径。
+已知待办项（历史遗留）：`./build.sh ALL` 在部分子目标失败时仍可能报告整体成功。
+
+回归测试：`./build.sh TEST` 会运行 `tests/regression.sh`（覆盖范围见
+[setup.md §构建目标](setup.md)）。它断言非 ROS 通路的关键不变量 —— 每个已入库的人
+必须是自己的 rank-1、冒名顶替分数必须低于默认阈值、特征指纹不匹配必须报错、
+`add-template` + `backfill` 往返后排名不变。
+
+**未覆盖**：ROS1/ROS2 运行时行为、Web HTTP 接口、`run` 的实时视频通路。发版前请手动
+走完本文件的检查清单，并覆盖
+[FAQ/troubleshooting.md §四](FAQ/troubleshooting.md#四离线功能验证) 的离线验证路径。
 
 ---
 

@@ -1,5 +1,7 @@
 #include "face_db_web/face_handler.hpp"
 
+#include "face_recognition_core/embedding_policy.hpp"
+
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/imgproc.hpp>
 
@@ -212,10 +214,19 @@ HttpResponse FaceHandler::addFace(const HttpRequest& req) {
             if (!decoded_img.empty()) {
                 auto detections = detector_->detect(decoded_img, 1);
                 if (!detections.empty()) {
-                    embedding = recognizer_->extract_embedding(
-                        decoded_img, detections.front().bbox, detections.front().landmarks);
-                    if (embedding.empty()) {
-                        std::cerr << "[FaceHandler] warning: embedding extraction returned empty for '" << name << "'\n";
+                    // Route through the core's gate rather than calling the
+                    // recogniser directly: this writer must apply the same
+                    // quality rules as every other writer, otherwise the gallery
+                    // ends up mixing embeddings from different front-ends /
+                    // quality levels and nothing can detect it.
+                    face_recognition::EmbeddingPolicy policy;
+                    auto outcome = face_recognition::make_embedding(
+                        *recognizer_, decoded_img, detections.front(), policy);
+                    if (outcome.ok()) {
+                        embedding = std::move(outcome.embedding);
+                    } else {
+                        std::cerr << "[FaceHandler] refused embedding for '" << name
+                                  << "': " << outcome.reject_reason << "\n";
                     }
                 } else {
                     std::cerr << "[FaceHandler] warning: no face detected in uploaded image for '" << name << "'\n";

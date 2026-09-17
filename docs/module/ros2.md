@@ -18,7 +18,7 @@ ROS2 Humble 版本的人脸识别功能包，包含 **3 个可执行节点**：
 
 ```bash
 ./build.sh ROS2          # = vendored SQLite3 + CORE + colcon build
-source install/setup.bash
+source install/ros2/setup.bash
 ```
 
 等价的手工流程：
@@ -28,7 +28,7 @@ source /opt/ros/humble/setup.bash
 colcon build --packages-select \
     face_recognition_core face_recognition_ros2_interfaces face_recognition_ros2 \
     --cmake-args -DCMAKE_BUILD_TYPE=Release
-source install/setup.bash
+source install/ros2/setup.bash
 ```
 
 ---
@@ -84,7 +84,7 @@ ros2 launch face_recognition_ros2 face_recognition.launch.py \
 | `image_topic` | `/image_raw` | 输入图像话题 |
 | `result_topic` | `/face/recognition_result` | 识别结果话题 |
 | `annotated_topic` | `/face/annotated` | 标注图话题 |
-| `confidence_threshold` | `0.7` | 识别相似度阈值 |
+| `confidence_threshold` | `0.5` | 识别相似度阈值 |
 | `video_device` | `/dev/video0` | V4L2 摄像头设备 |
 | `image_width` / `image_height` | `640` / `480` | 分辨率 |
 | `pixel_format` | `yuyv` | `yuyv` / `mjpeg` 等 |
@@ -104,7 +104,7 @@ ros2 launch face_recognition_ros2 face_recognition.launch.py \
 | `recognition_model` | `<project>/models/w600k_r50.onnx` | 识别模型 |
 | `image_topic` | `/image_raw` | 输入图像话题 |
 | `result_topic` | `/face/recognition_result` | 结果话题 |
-| `confidence_threshold` | `0.7` | 相似度阈值 |
+| `confidence_threshold` | `0.5` | 相似度阈值 |
 | `launch_viewer` | `true` | 是否拉起 `face_viewer_node` |
 | `annotated_topic` | `/face/annotated` | 标注图话题 |
 | `stream_port` | `8090` | 推流端口（`0` 表示禁用） |
@@ -131,7 +131,7 @@ ros2 launch face_recognition_ros2 usb_cam_face.launch.py \
 |---|---|---|
 | `image_topic` | `/image_raw` | 输入图像话题 |
 | `result_topic` | `/face/recognition_result` | 结果话题 |
-| `confidence_threshold` | `0.7` | 识别相似度阈值 |
+| `confidence_threshold` | `0.5` | 识别相似度阈值 |
 | `db_path` | `/tmp/face_db/faces.db` | SQLite 数据库路径 |
 | `faces_dir` | `/tmp/face_db/faces` | 缩略图目录 |
 | `detection_model` | `models/det_10g.onnx` | 检测模型 |
@@ -208,6 +208,8 @@ ros2 service list | grep face_db
 # → /face_db/remove
 # → /face_db/list
 # → /face_db/clear
+# → /face_db/add_template
+# → /face_db/verify
 
 # 图像流频率
 ros2 topic hz /image_raw
@@ -259,6 +261,14 @@ ros2 service call /face_db/remove face_recognition_ros2_interfaces/srv/RemoveFac
 
 # 清空
 ros2 service call /face_db/clear face_recognition_ros2_interfaces/srv/ClearFaces
+
+# 追加一"枪"（多模板：外观变化时用同一人的另一张照片补强）
+ros2 service call /face_db/add_template face_recognition_ros2_interfaces/srv/AddTemplate \
+  "{id: '<UUID>', image_data: '<BASE64>'}"
+
+# 校验：对全库打分并返回判定，不入库（等价于 face_recognition_app verify）
+ros2 service call /face_db/verify face_recognition_ros2_interfaces/srv/Verify \
+  "{image_data: '<BASE64>', threshold: 0.0}"
 ```
 
 字段与返回定义见 [../protocol/ros_interfaces.md](../protocol/ros_interfaces.md)。

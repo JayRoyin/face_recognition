@@ -14,18 +14,19 @@ depend on ROS — only OpenCV, ONNX Runtime and SQLite3.
 
 ```bash
 ./build.sh STANDALONE                 # 或
-make -C src/face_recognition_standalone/build -j$(nproc)
+make -C build/standalone -j$(nproc)
 ```
 
 Binary:
 
 ```
-src/face_recognition_standalone/build/face_recognition_app
+install/bin/face_recognition_app
 ```
 
-It links the shared `libface_recognition_core.so` built in the same tree
-(`build/face_recognition_core_build/`), which resolves via RPATH — no manual
-`LD_LIBRARY_PATH` needed.
+It links the installed `libface_recognition_core.so` from `<repo>/install/lib` —
+the same shared library the web UI and the ROS nodes use, resolved via RPATH
+(no manual `LD_LIBRARY_PATH` needed). Build the core first
+(`./build.sh CORE`); `./build.sh STANDALONE` does it for you.
 
 ---
 
@@ -63,7 +64,7 @@ help          print usage
 
 ```bash
 cd <repo root>
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 
 $APP help
 $APP add --image alice.jpg --name Alice --title "CEO" --scene office

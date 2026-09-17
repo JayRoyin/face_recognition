@@ -21,6 +21,14 @@ find_package(catkin REQUIRED COMPONENTS
 
 find_package(OpenCV 4.5 REQUIRED)
 
+# Core library: link the one ./build.sh CORE installed.
+#
+# NOTE: this package previously linked NO core library at all — no
+# add_subdirectory(), no find_package(), and no core entry in package.xml — even
+# though node.hpp includes face_recognition_core/*.hpp. It therefore could not
+# compile. build.sh passes -DCMAKE_PREFIX_PATH=<repo>/install.
+find_package(face_recognition_core 1.0 REQUIRED)
+
 catkin_package(
   CATKIN_DEPENDS
     roscpp
@@ -50,6 +58,7 @@ add_dependencies(face_recognition_node
 )
 
 target_link_libraries(face_recognition_node
+  face_recognition_core::face_recognition_core
   ${catkin_LIBRARIES}
   ${OpenCV_LIBS}
 )

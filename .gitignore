@@ -68,9 +68,10 @@ tests/__pycache__/
 tests/.pytest_cache/
 tests/.ruff_cache/
 
-# ===== ROS =====
+# ===== ROS / 构建产物 =====
 log/
 install/
+devel/
 
 docs/superpowers
 docs/reference

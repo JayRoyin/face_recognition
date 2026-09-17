@@ -1,5 +1,9 @@
 #include "face_recognition_ros1/node.hpp"
 
+#include "face_recognition_core/embedding_policy.hpp"
+
+#include <opencv2/imgcodecs.hpp>
+
 #include <ctime>
 #include <algorithm>
 #include <cstring>
@@ -11,7 +15,10 @@ namespace face_recognition_ros1 {
 FaceRecognitionNode::FaceRecognitionNode()
     : nh_("~"), pnh_(""), it_(nh_) {
 
-    nh_.param<float>("confidence_threshold", confidence_threshold_, 0.7f);
+    // 0.5, matching the standalone app / web UI. This value doubles as BOTH the
+    // detector confidence and the recognition threshold, and 0.7 sits inside the
+    // "genuine" cluster: it silently rejects a large share of correct matches.
+    nh_.param<float>("confidence_threshold", confidence_threshold_, 0.5f);
     nh_.param<std::string>("db_path", db_path_, "/tmp/face_db/faces.db");
     nh_.param<std::string>("faces_dir", faces_dir_, "/tmp/face_db/faces");
     nh_.param<std::string>("detection_model", detection_model_path_, "/models/det_10g.onnx");
@@ -46,9 +53,17 @@ FaceRecognitionNode::FaceRecognitionNode()
             if (image.empty()) continue;
             auto detections = detector_->detect(image, 1);
             if (!detections.empty()) {
-                auto embedding = recognizer_->extract_embedding(
-                    image, detections.front().bbox, detections.front().landmarks);
-                if (!embedding.empty()) database_->update_embedding(face.id, embedding);
+                // Route through the core gate so this node applies exactly the
+                // same quality rules as the standalone app and the web UI.
+                face_recognition::EmbeddingPolicy policy;
+                auto outcome = face_recognition::make_embedding(
+                    *recognizer_, image, detections.front(), policy);
+                if (outcome.ok()) {
+                    database_->update_embedding(face.id, outcome.embedding);
+                } else {
+                    ROS_WARN("backfill skipped id=%s: %s",
+                             face.id.c_str(), outcome.reject_reason.c_str());
+                }
             }
         }
         ROS_INFO("Face database initialized with %d faces", database_->get_face_count());
@@ -71,6 +86,10 @@ FaceRecognitionNode::FaceRecognitionNode()
         &FaceRecognitionNode::listFacesCallback, this);
     clear_srv_ = nh_.advertiseService("/face_db/clear",
         &FaceRecognitionNode::clearFacesCallback, this);
+    add_template_srv_ = nh_.advertiseService("/face_db/add_template",
+        &FaceRecognitionNode::addTemplateCallback, this);
+    verify_srv_ = nh_.advertiseService("/face_db/verify",
+        &FaceRecognitionNode::verifyCallback, this);
 
     ROS_INFO("Face Recognition Node initialized");
 }
@@ -104,10 +123,12 @@ void FaceRecognitionNode::imageCallback(const sensor_msgs::ImageConstPtr& msg) {
     result_msg.header = msg->header;
 
     for (const auto& det : detections) {
-        auto embedding = recognizer_->extract_embedding(image, det.bbox, det.landmarks);
-        if (embedding.empty()) {
+        face_recognition::EmbeddingPolicy policy;
+        auto outcome = face_recognition::make_embedding(*recognizer_, image, det, policy);
+        if (!outcome.ok()) {
             continue;
         }
+        auto embedding = std::move(outcome.embedding);
 
         auto match = database_->find_matching_face(embedding, confidence_threshold_);
         if (!match) {
@@ -215,8 +236,12 @@ bool FaceRecognitionNode::addFaceCallback(face_recognition_ros1_interfaces::AddF
         if (!image.empty()) {
             auto detections = detector_->detect(image, 1);
             if (!detections.empty()) {
-                embedding = recognizer_->extract_embedding(
-                    image, detections.front().bbox, detections.front().landmarks);
+                face_recognition::EmbeddingPolicy policy;
+                auto outcome = face_recognition::make_embedding(
+                    *recognizer_, image, detections.front(), policy);
+                if (outcome.ok()) {
+                    embedding = std::move(outcome.embedding);
+                }
             }
         }
     }
@@ -270,6 +295,139 @@ bool FaceRecognitionNode::clearFacesCallback(face_recognition_ros1_interfaces::C
                                              face_recognition_ros1_interfaces::ClearFaces::Response& res) {
     res.deleted_count = database_->clear_all();
     res.success = true;
+    return true;
+}
+
+bool FaceRecognitionNode::addTemplateCallback(face_recognition_ros1_interfaces::AddTemplate::Request& req,
+                                              face_recognition_ros1_interfaces::AddTemplate::Response& res) {
+    if (req.id.empty()) {
+        res.success = false;
+        res.message = "id is required";
+        return true;
+    }
+    if (req.image_data.empty()) {
+        res.success = false;
+        res.message = "image_data is required";
+        return true;
+    }
+    if (!database_->get_face(req.id)) {
+        res.success = false;
+        res.message = "unknown id: " + req.id;
+        return true;
+    }
+
+    auto image_data = base64Decode(req.image_data);
+    if (image_data.empty()) {
+        res.success = false;
+        res.message = "image_data is not valid base64";
+        return true;
+    }
+    cv::Mat buf(1, static_cast<int>(image_data.size()), CV_8U, image_data.data());
+    cv::Mat image = cv::imdecode(buf, cv::IMREAD_COLOR);
+    if (image.empty()) {
+        res.success = false;
+        res.message = "could not decode image_data";
+        return true;
+    }
+
+    auto detections = detector_->detect(image, 1);
+    if (detections.empty()) {
+        res.success = false;
+        res.message = "no face detected";
+        return true;
+    }
+
+    // Same gate as every other writer (see embedding_policy.hpp).
+    face_recognition::EmbeddingPolicy policy;
+    auto outcome = face_recognition::make_embedding(
+        *recognizer_, image, detections.front(), policy);
+    if (!outcome.ok()) {
+        res.success = false;
+        res.message = "refused: " + outcome.reject_reason;
+        return true;
+    }
+
+    if (!database_->add_template(req.id, outcome.embedding)) {
+        res.success = false;
+        res.message = "failed to store template";
+        return true;
+    }
+
+    res.templates = database_->template_count(req.id);
+    res.success = true;
+    res.message = "template added";
+    return true;
+}
+
+bool FaceRecognitionNode::verifyCallback(face_recognition_ros1_interfaces::Verify::Request& req,
+                                         face_recognition_ros1_interfaces::Verify::Response& res) {
+    res.success = false;
+    res.matched = false;
+
+    if (req.image_data.empty()) {
+        res.decision = "ERROR";
+        res.message = "image_data is required";
+        return true;
+    }
+
+    auto image_data = base64Decode(req.image_data);
+    if (image_data.empty()) {
+        res.decision = "ERROR";
+        res.message = "image_data is not valid base64";
+        return true;
+    }
+    cv::Mat buf(1, static_cast<int>(image_data.size()), CV_8U, image_data.data());
+    cv::Mat image = cv::imdecode(buf, cv::IMREAD_COLOR);
+    if (image.empty()) {
+        res.decision = "ERROR";
+        res.message = "could not decode image_data";
+        return true;
+    }
+
+    auto detections = detector_->detect(image, 1);
+    if (detections.empty()) {
+        res.decision = "NO_FACE";
+        res.message = "no face detected";
+        return true;
+    }
+
+    face_recognition::EmbeddingPolicy policy;
+    auto outcome = face_recognition::make_embedding(
+        *recognizer_, image, detections.front(), policy);
+    if (!outcome.ok()) {
+        // The gate's reason is the main point of this service: it separates
+        // "too small / landmarks unusable" from "genuinely a different person".
+        res.decision = "NO_FACE";
+        res.message = "refused by quality gate: " + outcome.reject_reason;
+        return true;
+    }
+
+    const float threshold = (req.threshold > 0.0f) ? req.threshold
+                                                   : confidence_threshold_;
+
+    const auto ranked = database_->rank_faces(outcome.embedding);
+    auto best = database_->find_matching_face(outcome.embedding, threshold);
+
+    res.threshold = threshold;
+    res.success   = true;
+    res.matched   = static_cast<bool>(best);
+    res.decision  = best ? "ACCEPT" : "REJECT";
+    res.message   = best ? "matched" : "no identity above threshold";
+
+    if (!ranked.empty()) {
+        res.score = ranked.front().similarity;
+        res.id    = best ? best->id : ranked.front().face_id;
+        res.name  = best ? best->name : ranked.front().name;
+    }
+
+    for (const auto& candidate : ranked) {
+        face_recognition_ros1_interfaces::FaceInfo info;
+        info.id         = candidate.face_id;
+        info.name       = candidate.name;
+        info.title      = candidate.title;
+        info.confidence = candidate.similarity;
+        res.candidates.push_back(info);
+    }
     return true;
 }
 

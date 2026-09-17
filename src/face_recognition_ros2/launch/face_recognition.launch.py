@@ -36,7 +36,7 @@ def generate_launch_description():
 
     confidence_arg = DeclareLaunchArgument(
         'confidence_threshold',
-        default_value='0.7',
+        default_value='0.5',
         description='Recognition similarity threshold'
     )
 

@@ -76,7 +76,17 @@ public:
             "CREATE INDEX IF NOT EXISTS idx_face_templates_face_id "
             "ON face_templates(face_id)";
 
-        for (const char* sql : {faces_sql, templates_sql, index_sql}) {
+        // Key/value store for gallery-wide facts. Currently only the
+        // feature-space fingerprint (which preprocessing recipe produced the
+        // embeddings in this file) — see feature_space.hpp.
+        const char* metadata_sql = R"(
+            CREATE TABLE IF NOT EXISTS metadata (
+                key   TEXT PRIMARY KEY,
+                value TEXT
+            )
+        )";
+
+        for (const char* sql : {faces_sql, templates_sql, index_sql, metadata_sql}) {
             char* errMsg = nullptr;
             if (sqlite3_exec(db, sql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
                 std::cerr << "[FaceDatabase] createTable failed: "
@@ -94,6 +104,40 @@ public:
         char id[37];
         uuid_unparse_lower(uuid, id);
         return std::string(id);
+    }
+
+    // -------------------------------------------------------------- metadata
+    bool setMeta(const std::string& key, const std::string& value) {
+        const char* sql =
+            "INSERT INTO metadata (key, value) VALUES (?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            std::cerr << "[FaceDatabase] setMeta prepare failed: "
+                      << sqlite3_errmsg(db) << std::endl;
+            return false;
+        }
+        sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, value.c_str(), -1, SQLITE_TRANSIENT);
+        const bool ok = (sqlite3_step(stmt) == SQLITE_DONE);
+        sqlite3_finalize(stmt);
+        return ok;
+    }
+
+    std::string getMeta(const std::string& key) {
+        const char* sql = "SELECT value FROM metadata WHERE key = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            return std::string();
+        }
+        sqlite3_bind_text(stmt, 1, key.c_str(), -1, SQLITE_TRANSIENT);
+        std::string out;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            const unsigned char* text = sqlite3_column_text(stmt, 0);
+            if (text) out = reinterpret_cast<const char*>(text);
+        }
+        sqlite3_finalize(stmt);
+        return out;
     }
 
     bool saveImageFile(const std::string& path, const std::vector<uint8_t>& data) {
@@ -616,6 +660,16 @@ bool FaceDatabase::update_embedding(const std::string& face_id,
     const bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(pImpl->db) == 1;
     sqlite3_finalize(stmt);
     return ok;
+}
+
+bool FaceDatabase::set_meta(const std::string& key, const std::string& value) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return pImpl->setMeta(key, value);
+}
+
+std::string FaceDatabase::get_meta(const std::string& key) const {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    return pImpl->getMeta(key);
 }
 
 }  // namespace face_recognition

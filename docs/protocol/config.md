@@ -40,7 +40,7 @@
     image_topic: "/image_raw"
     result_topic: "/face/recognition_result"
 
-    confidence_threshold: 0.7
+    confidence_threshold: 0.5
     nms_threshold: 0.5
 
     db_path: "/tmp/face_db/faces.db"
@@ -66,7 +66,7 @@ ros2 launch face_recognition_ros2 face_recognition.launch.py \
 |---|---|---|---|
 | `image_topic` | string | `/image_raw` | 输入图像话题 |
 | `result_topic` | string | `/face/recognition_result` | 结果话题 |
-| `confidence_threshold` | float | `0.7` | 识别相似度阈值（同时传给检测器） |
+| `confidence_threshold` | float | `0.5` | 识别相似度阈值（同时传给检测器） |
 | `db_path` | string | `/tmp/face_db/faces.db` | 数据库路径 |
 | `faces_dir` | string | `/tmp/face_db/faces` | 缩略图目录 |
 | `detection_model` | string | `models/det_10g.onnx` | 检测模型 |
@@ -98,7 +98,7 @@ face_recognition_node:
   ros__parameters:
     image_topic: "/image_raw"
     result_topic: "/face/recognition_result"
-    confidence_threshold: 0.7
+    confidence_threshold: 0.5
     db_path: "/tmp/face_db/faces.db"
     faces_dir: "/tmp/face_db/faces"
     detection_model: "/models/det_10g.onnx"
@@ -210,7 +210,7 @@ Launch 参数与节点参数同名，直接通过 `<arg>` / `<param>` 传递，�
 > 升级后需执行 `face_recognition_app backfill --all` 重建，否则会出现"本人识别不出、
 > 他人也能识别"。详见 [../FAQ/troubleshooting.md](../FAQ/troubleshooting.md)。
 >
-> ROS1 / ROS2 节点的 `confidence_threshold` 参数默认仍为 `0.7`，且**同时**作为
+> ROS1 / ROS2 节点的 `confidence_threshold` 参数默认已统一为 `0.5`，且**同时**作为
 > 检测置信度与识别相似度阈值传入，现场使用建议一并下调（见
 > [../FAQ/troubleshooting.md](../FAQ/troubleshooting.md)）。
 

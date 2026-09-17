@@ -5,7 +5,7 @@
 队列统计与判定原因都打印出来。
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 $APP verify --image ./某张图.jpg
 ```
 
@@ -82,6 +82,92 @@ export ROS_LOG_DIR=/tmp/roslog
 mkdir -p "$ROS_LOG_DIR"
 ```
 
+### Q25 ROS2 链接失败：`libgdal.so: undefined reference to curl_*@CURL_OPENSSL_4`
+
+**现象**（`./build.sh ROS2`：colcon 已完成配置与编译，卡在最后链接）
+
+```
+/usr/bin/ld: /lib/libgdal.so.30: undefined reference to `curl_easy_cleanup@CURL_OPENSSL_4'
+/usr/bin/ld: /lib/x86_64-linux-gnu/libnetcdf.so.19: undefined reference to `curl_easy_strerror@CURL_OPENSSL_4'
+collect2: error: ld returned 1 exit status
+Failed   <<< face_recognition_ros2
+```
+
+**这不是宿主库的问题**：宿主 `libcurl4 7.81.0` / `libtiff5 4.3.0` / `libgdal30 3.4.1`
+同属 jammy，版本自洽。真正原因是 **conda 前缀污染了链接搜索路径**：
+
+```
+conda base 处于激活状态（CONDA_PREFIX=<conda>）
+  → CMake 从 conda 解析到 Python / spdlog / fmt
+  → 链接 conda 的 libpython3.13.so，并把 $CONDA_PREFIX/lib 写进链接行：
+        -Wl,-rpath,...,$CONDA_PREFIX/lib
+        -Wl,-rpath-link,$CONDA_PREFIX/lib        ← 关键
+  → ld 用 -rpath-link 目录优先解析「链接行上各库的 DT_NEEDED」
+  → 系统 libgdal.so（经 OpenCV 的 imgcodecs / highgui / videoio 引入）
+    需要 libcurl.so.4 与 libtiff.so.5
+  → 在 conda 目录里先命中 conda 的 libcurl.so.4.8.0（libcurl 8.x，
+    **不提供 CURL_OPENSSL_4 这个符号版本**）→ 符号解析失败
+```
+
+`objdump -T` 佐证：系统 `libcurl.so.4` 提供 **88** 个 `CURL_OPENSSL_4` 符号，
+conda 那份提供 **0** 个。
+
+**为什么只有 ROS2 出问题**：只有 ament / rosidl 这条链会链接 libpython，也就只有它会把
+`$CONDA_PREFIX/lib` 引入链接搜索路径。`face_recognition_core`、`face_recognition_app`、
+`face_db_web` 的链接行里没有该目录，所以一直是好的。
+
+**处理**
+
+`build.sh` 的 ROS 分支已固化三道防线，**不需要改动系统库**：
+
+1. 记录并 `unset CONDA_PREFIX`；
+2. 传 `-DCMAKE_IGNORE_PREFIX_PATH=$CONDA_PREFIX`（需 CMake ≥ 3.23）；
+3. 显式钉住系统 Python —— 注意 `rosidl_generator_py` 走的是 `python_cmake_module`，
+   即**遗留变量** `PYTHON_EXECUTABLE` / `PYTHON_LIBRARY` / `PYTHON_INCLUDE_DIR`，
+   而不是 `Python3_*`；只钉 `Python3_*` 会漏掉它。
+
+在别的机器上遇到同样报错时，先确认是否处于 conda / pyenv 之类的激活环境，
+或直接 `conda deactivate` 后重试。
+
+**自查命令**
+
+```bash
+L=build/ros2/face_recognition_ros2/CMakeFiles/face_recognition_node.dir/link.txt
+grep -c anaconda3 "$L"                                    # 期望 0
+objdump -T /lib/x86_64-linux-gnu/libcurl.so.4 | grep -c CURL_OPENSSL_4   # 88
+ldd install/ros2/face_recognition_ros2/lib/face_recognition_ros2/face_recognition_node \
+  | grep -E "face_recognition_core|curl|tiff|gdal"        # 期望全部指向系统库
+```
+
+### Q26 启动时提示 `gallery feature space mismatch`
+
+**现象**
+
+```
+[WARN] gallery feature space mismatch
+         stored : fs1|det=scrfd-stride|front=arcface112-align|norm=rgb-pm127.5|model=174383860:1632137312
+         current: fs1|det=scrfd-stride|front=faceswap-latest|norm=rgb-pm127.5|model=174383860:1632137312
+```
+
+**含义**：库里的特征是用**另一套配方**算出来的，与当前代码产出的特征不在同一子空间，
+因此逐项比对毫无意义 —— 这正是"本人识别不出、他人却很像"的成因。它不是数据损坏，
+而是**升级后的正常反应**：指纹就是用来把这种静默失效变成一条明确告警。
+
+**处理**
+
+```bash
+./install/bin/face_recognition_app backfill --all
+```
+
+重算全部特征后指纹会更新为当前配方。
+
+**常见触发改动**：切换对齐 / bbox 裁剪前端、修改检测框或关键点解码、调整归一化常量、
+更换识别模型、改动模板尺寸 —— 任何一项都会改变特征子空间。
+
+> 指纹串各字段含义见 [../module/core.md](../module/core.md) 的「特征指纹」。
+> 若 `stored` 为空，说明是本次之前创建的旧库，程序会自动补写（状态 `STAMPED`），
+> 无需任何操作；首次 `backfill --all` 之后它才真正成立。
+
 ---
 
 ## 二、运行阶段
@@ -133,7 +219,7 @@ ros2 node list | grep face      # ③ 节点是否存活
 
 ```bash
 # 用 standalone 直接查看同一个库
-./src/face_recognition_standalone/build/face_recognition_app \
+./install/bin/face_recognition_app \
     --db /tmp/face_db/faces.db list
 ```
 
@@ -146,7 +232,7 @@ ros2 node list | grep face      # ③ 节点是否存活
 **处理**
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 $APP list                  # 确认哪些记录 emb=NO
 $APP backfill              # 一次性补全
 
@@ -205,15 +291,15 @@ ros2 launch face_recognition_ros2 usb_cam_face.launch.py   # 浏览器看 8090
 
 ```bash
 # ① 降低检测输入尺寸：最有效的一档
-./src/face_recognition_standalone/build/face_recognition_app run --source 0 \
+./install/bin/face_recognition_app run --source 0 \
     --input-size 320
 
 # ② 再降一档 / 加大跳帧
-./src/face_recognition_standalone/build/face_recognition_app run --source 0 \
+./install/bin/face_recognition_app run --source 0 \
     --input-size 240 --detect-every-n 3
 
 # ③ 只看有没有人脸（不识别身份）
-./src/face_recognition_standalone/build/face_recognition_app run --source 0 \
+./install/bin/face_recognition_app run --source 0 \
     --no-recognition --input-size 240
 ```
 
@@ -237,7 +323,7 @@ sudo apt install libopencv-dev      # arm64
 **第一步：用 `verify` 拿到真实分数**
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 $APP verify --image <库内同一人的已知照片>
 ```
 
@@ -254,14 +340,16 @@ $APP verify --image <库内同一人的已知照片>
 standalone 默认阈值已是 `0.5`。若你在用旧二进制或显式传了 `0.7`：
 
 ```bash
-./src/face_recognition_standalone/build/face_recognition_app run --source 0 \
+./install/bin/face_recognition_app run --source 0 \
     --recognition-threshold 0.5
 ```
 
-**ROS1 / ROS2 节点** 的 `confidence_threshold` 默认仍是 `0.7`，而且它**同时被当作
-检测置信度**传给 `FaceDetector`（见 `node.cpp` 中
-`detector_->initialize(path, confidence_threshold_)`），会连带把检测置信度低于
-0.7 的人脸直接丢掉。现场建议把该参数下调到 `0.5`：
+**ROS1 / ROS2 节点** 的 `confidence_threshold` 默认已统一为 `0.5`（与 standalone /
+Web 一致）。注意它**同时被当作检测置信度**传给 `FaceDetector`（见 `node.cpp` 中
+`detector_->initialize(path, confidence_threshold_)`），所以把它调高会连带丢掉检测
+置信度低于该值的人脸 —— 这是"阈值越调越高、框反而越来越少"的原因。
+
+需要临时覆盖时：
 
 ```bash
 ros2 launch face_recognition_ros2 usb_cam_face.launch.py confidence_threshold:=0.5
@@ -322,7 +410,7 @@ ORT 日志级别降为 `ERROR`，不再打印上述无害警告。
 
 ```bash
 # 重新编译核心库与 standalone 即可
-make -C src/face_recognition_standalone/build -j$(nproc)
+make -C build/standalone -j$(nproc)
 # 或
 ./build.sh STANDALONE
 ```
@@ -375,7 +463,7 @@ make -C src/face_recognition_standalone/build -j$(nproc)
 **修复**（用库内存档的缩略图重建，不需要重新上传）：
 
 ```bash
-./src/face_recognition_standalone/build/face_recognition_app backfill --all
+./install/bin/face_recognition_app backfill --all
 ```
 
 > ⚠️ **务必保证所有通路使用同一次构建**。`face_recognition_core` 在
@@ -401,7 +489,7 @@ make -C src/face_recognition_standalone/build -j$(nproc)
 #### 自查三步
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 
 # ① 库里到底有几个人？（只有 1 个人还被"他人"命中，就一定是误识或前端问题）
 $APP list
@@ -447,7 +535,7 @@ sqlite3 /tmp/face_db/faces.db \
 1. **重建已有记录**（缩略图已存档，不需要重新上传）：
 
    ```bash
-   ./src/face_recognition_standalone/build/face_recognition_app backfill --all
+   ./install/bin/face_recognition_app backfill --all
    ```
 
 2. **让 Web 后台以后能自动找到模型**。现在它会按以下顺序查找
@@ -491,7 +579,7 @@ sqlite3 /tmp/face_db/faces.db \
 1. **给同一人补一枪"不戴眼镜"的照片**（多模板，最直接有效）：
 
    ```bash
-   APP=./src/face_recognition_standalone/build/face_recognition_app
+   APP=./install/bin/face_recognition_app
    $APP list                       # 取到该人的 <face_id>
    $APP add-template --id <face_id> --image ~/photos/me_no_glasses.jpg
    $APP list                       # templates 变成 2
@@ -559,8 +647,8 @@ sqlite3 /tmp/face_db/faces.db \
 [../services/face_detector.md §3.3](../services/face_detector.md#33-解码scrfd-约定)。
 
 ```bash
-make -C src/face_recognition_standalone/build -j$(nproc)
-./src/face_recognition_standalone/build/face_recognition_app backfill --all   # 必须重建
+make -C build/standalone -j$(nproc)
+./install/bin/face_recognition_app backfill --all   # 必须重建
 ```
 
 > 这条修复**改变了取脸区域**，因此等价于更换前端：**不执行 `backfill --all`
@@ -581,7 +669,7 @@ make -C src/face_recognition_standalone/build -j$(nproc)
 **处理**
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 
 # ① 先看这台机器上到底有哪些节点、哪台是什么、各自当前模式
 $APP cameras
@@ -640,7 +728,7 @@ $APP run --camera 0 --width 0 --height 0        # 用摄像头自己的默认分
 不依赖 ROS 与摄像头的最小验证路径：
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 
 # ① 录入测试图片并查看
 $APP add --image ./test.jpg --name test_person --scene test

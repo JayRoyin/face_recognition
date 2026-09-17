@@ -14,10 +14,13 @@ web 四个应用层模块共同复用。它对外暴露三个类 + 一套数据�
 ```
 src/face_recognition_core/
 ├── CMakeLists.txt
+├── cmake/face_recognition_coreConfig.cmake.in   # 导出的 CMake package 模板
 ├── include/face_recognition_core/
 │   ├── types.hpp              # 通用数据类型 + 相似度函数
 │   ├── face_detector.hpp      # 人脸检测接口
-│   ├── face_recognizer.hpp    # 人脸特征提取接口
+│   ├── face_recognizer.hpp    # 单张人脸的取脸 + 特征提取
+│   ├── embedding_policy.hpp   # ★ 统一的"检测 → 特征"质量门控（唯一入口）
+│   ├── feature_space.hpp      # ★ 特征指纹：记录 / 校验库内特征所属的配方
 │   └── face_database.hpp      # 人脸库（SQLite3）接口
 └── src/
     ├── face_detector.cpp      # SCRFD(RetinaFace 系) / YOLOv8 双 backend 后处理
@@ -163,6 +166,68 @@ std::string getLastError() const;
 - 输出：512 维 `float` 向量（存储为 2048 字节 BLOB）
 - 归一化：`RGB` + 缩放到 `[0, 1]`，随后 L2 归一化
 
+> ⚠️ **不要直接调用 `extract_embedding()` 产生入库 / 查询特征**，请走下面的统一门控。
+
+#### 统一门控：`embedding_policy.hpp`
+
+```cpp
+struct EmbeddingPolicy {
+    int  min_face_size     = 80;    // 0 = 不限制
+    bool require_alignment = true;  // 要求对齐前端，拒绝 bbox 回退
+    bool allow_unaligned   = false;
+};
+
+struct EmbeddingOutcome {
+    std::vector<float> embedding;
+    bool               used_alignment = false;
+    std::string        reject_reason;   // 非空即被拒
+    bool ok() const;
+};
+
+EmbeddingOutcome make_embedding(FaceRecognizer& recognizer,
+                                const cv::Mat& image,
+                                const FaceDetection& det,
+                                const EmbeddingPolicy& policy);
+```
+
+所有**产生**特征的路径（录入、`add-template`、`backfill`）与所有**查询**路径
+（实时识别、`verify`）都走它。
+
+> **为什么把它放进 core**：这个门控原先只存在于 standalone 的
+> `RecognitionPipeline` 里，于是 `face_db_web` 与两个 ROS 节点直接调用
+> `extract_embedding()` 绕过了它 —— 同一个人脸库里因此可以混入不同规则下产生的
+> 特征，而数据本身**没有任何标记**能暴露这一点，外部表现就是"模型坏了"。
+
+#### 特征指纹：`feature_space.hpp`
+
+```cpp
+/** 由流水线的编译期常量 + 模型文件身份生成，配方一变它就变。 */
+std::string feature_space_id(const std::string& recognition_model_path);
+
+enum class FeatureSpaceStatus { OK, STAMPED, MISMATCH };
+
+FeatureSpaceStatus check_feature_space(FaceDatabase& db,
+                                       const std::string& current_id,
+                                       std::string* stored_id = nullptr);
+```
+
+首次使用时把当前指纹写入 `metadata` 表（`feature_space_id`），之后每次启动比对；
+不一致就打印 `stored` / `current` 与 `backfill --all` 修复命令。
+
+指纹串形如：
+
+```
+fs1|det=scrfd-stride|front=arcface112-align|norm=rgb-pm127.5|model=174383860:1632137312
+```
+
+- `det` / `front` / `norm` 是**流水线的编译期常量**，改代码就会变；
+- `model` 用**大小 + mtime** 而非内容哈希 —— 每次启动哈希 170 MB 的 ONNX 不值那一秒，
+  而换模型必然改变其中之一。
+
+> 存在意义：一个 512 维 float blob **不含任何"我是用哪套配方算出来的"信息**。
+> 前端 / 归一化 / 模型任何一项变更后，库里的旧特征与查询特征不再可比，表现与
+> "模型变差"完全一致而无法归因。有了指纹，这种静默失效就变成启动时的一条明确告警。
+
 详见 [../services/face_recognizer.md](../services/face_recognizer.md)。
 
 ### 4.3 FaceDatabase
@@ -241,12 +306,15 @@ bool update_embedding(const std::string& face_id, const std::vector<float>& embe
 等价的手工流程：
 
 ```bash
-cmake -S src/face_recognition_core -B src/face_recognition_core/build \
+cmake -S src/face_recognition_core -B build/core \
       -DCMAKE_BUILD_TYPE=Release \
       -DCMAKE_INSTALL_PREFIX=$PWD/install
-cmake --build src/face_recognition_core/build -j
-cmake --install src/face_recognition_core/build
+cmake --build build/core -j
+cmake --install build/core
 ```
+
+构建树固定放在仓库根的 `build/core/`，安装到 `install/{lib,include}` ——
+**`src/` 下不再产生任何构建产物**。
 
 安装内容：
 
@@ -268,12 +336,26 @@ install/include/face_recognition_core/*.hpp
 
 ## 6. 被谁使用
 
-| 消费方 | 使用方式 |
+四个应用层模块**全部**通过 `find_package(face_recognition_core)` 链接
+`install/lib/libface_recognition_core.so` 这**同一份**库：
+
+| 消费方 | 关键设置 |
 |---|---|
-| `face_recognition_ros2` | `add_subdirectory(../face_recognition_core)` 直接链接源码 |
-| `face_recognition_ros1` | 同上（catkin） |
-| `face_recognition_standalone` | 独立构建 `face_recognition_core_build` 并链接 |
-| `face_db_web` | 同上，并设置 `INSTALL_RPATH=$ORIGIN/../lib` |
+| `face_recognition_standalone` | `find_package` + 安装到 `install/bin/`，`INSTALL_RPATH=$ORIGIN/../lib` |
+| `face_db_web` | 同上 |
+| `face_recognition_ros2` | `find_package` + `INSTALL_RPATH=$ORIGIN/../../../../lib`（安装空间在 `install/ros2/`） |
+| `face_recognition_ros1` | `find_package`（catkin_make，devel 空间构建） |
+
+> **历史与动机**：这四个模块原来各自 `add_subdirectory(../face_recognition_core)`
+> 把核心源码编进自己的构建树；colcon 又额外把 core 当独立包编了一次。仓库里最多
+> 同时存在 **8 份同源 `.so`**，后果是"改一处只修好其中一份" —— 曾出现
+> `face_db_web` 用旧前端写入特征、而 `face_recognition_app` 用新前端查询，
+> 同一个库里混着两个特征子空间，且**没有任何机制能发现**。改为链接同一份之后，
+> 这类漂移在结构上不再可能发生。
+
+这依赖 core 导出 CMake package（`install/lib/cmake/face_recognition_core/`），
+且消费者配置时把 `CMAKE_PREFIX_PATH` 指向 `install/`（`build.sh` 已处理）。
+因此**必须先 `./build.sh CORE`**，再构建其它模块。
 
 ---
 

@@ -140,6 +140,13 @@ float face_recognition::compute_similarity(const std::vector<float>& a,
 
 `FaceRecognizer::compute_similarity()` 与上述自由函数**同一实现**，不再各自维护。
 
+### 统一门控（不要绕过）
+
+产生入库 / 查询特征时**不要直接调用 `extract_embedding()`**，请使用 core 的
+`make_embedding()`（`face_recognition_core/embedding_policy.hpp`）。它把"人脸尺寸
+下限 + 前端一致性"收在一处，是唯一允许产生特征的通路 —— 直接调用会让同一个库里
+混入不同规则的特征。详见 [../module/core.md](../module/core.md)。
+
 ### 阈值取值
 
 `recognition_threshold` / ROS 节点的 `confidence_threshold` 决定「相似度 ≥ 多少才算同一个人」。

@@ -17,6 +17,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/RemoveFace.srv"
   "srv/ListFaces.srv"
   "srv/ClearFaces.srv"
+  "srv/AddTemplate.srv"
+  "srv/Verify.srv"
   DEPENDENCIES builtin_interfaces std_msgs
 )
 

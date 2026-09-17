@@ -8,8 +8,10 @@
 #     source scripts/setup_env.sh
 #
 # What it does:
-#     1. Sources install/setup.bash (ROS2 Humble colcon overlay), so all
+#     1. Sources install/ros2/setup.bash (ROS2 Humble colcon overlay), so all
 #        face_recognition_* packages + dependencies are visible to ros2 CLI.
+#        NOTE: the ROS2 install space lives under install/ros2/ so it does not
+#        get mixed with the plain-CMake artifacts in install/{bin,lib,include}.
 #     2. Prepends install/vendored/lib to LD_LIBRARY_PATH so:
 #          - face_recognition_* binaries load our vendored libsqlite3.so first
 #          - libspatialite.so.7 (used by compressed_image_transport,
@@ -24,16 +26,17 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENDORED_LIB="$PROJECT_ROOT/install/vendored/lib"
+ROS2_INSTALL="$PROJECT_ROOT/install/ros2"
 
 # 1) ROS2 overlay ----------------------------------------------------------
-if [ -f "$PROJECT_ROOT/install/setup.bash" ]; then
+if [ -f "$ROS2_INSTALL/setup.bash" ]; then
     if [ -z "${COLCON_CURRENT_PREFIX:-}" ] || \
-       [ "${COLCON_CURRENT_PREFIX%/}" != "${PROJECT_ROOT%/}/install" ]; then
+       [ "${COLCON_CURRENT_PREFIX%/}" != "${ROS2_INSTALL%/}" ]; then
         # shellcheck disable=SC1091
-        source "$PROJECT_ROOT/install/setup.bash"
+        source "$ROS2_INSTALL/setup.bash"
     fi
 else
-    echo "[setup_env] WARN: $PROJECT_ROOT/install/setup.bash not found."
+    echo "[setup_env] WARN: $ROS2_INSTALL/setup.bash not found."
     echo "[setup_env] Did you run './build.sh ROS2' (or ALL)?"
 fi
 

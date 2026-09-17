@@ -10,44 +10,19 @@ if(NOT CMAKE_BUILD_TYPE)
 endif()
 
 # -----------------------------------------------------------------------------
-# Locate project root so we can reuse the existing face_recognition_core and
-# third_party/* exactly the same way the ROS versions do.
+# Core library.
+#
+# find_package (NOT add_subdirectory): this app links the SAME installed
+# libface_recognition_core.so as face_db_web and the ROS nodes, so a fix in the
+# core can never end up in one binary but not another.
+#
+# Configure with -DCMAKE_PREFIX_PATH=<repo>/install (build.sh passes it), or run
+# ./build.sh CORE first so the package exists.
 # -----------------------------------------------------------------------------
-set(_cursor "${CMAKE_CURRENT_SOURCE_DIR}")
-set(_i 0)
-while(_i LESS 8)
-    if(EXISTS "${_cursor}/src/face_recognition_core/CMakeLists.txt" AND
-       EXISTS "${_cursor}/third_party/sqlite3/CMakeLists.txt")
-        set(_PROJECT_ROOT "${_cursor}")
-        break()
-    endif()
-    get_filename_component(_cursor "${_cursor}" DIRECTORY)
-    math(EXPR _i "${_i} + 1")
-endwhile()
+find_package(face_recognition_core 1.0 REQUIRED)
 
-if(NOT _PROJECT_ROOT)
-    message(FATAL_ERROR
-        "face_recognition_standalone: could not locate project root. "
-        "Place this directory under <repo>/src/.")
-endif()
-
-message(STATUS "face_recognition_standalone: project root = ${_PROJECT_ROOT}")
-
-if(NOT DEFINED FACE_RECOGNITION_VENDORED_PREFIX)
-    set(FACE_RECOGNITION_VENDORED_PREFIX
-        "${_PROJECT_ROOT}/install/vendored"
-        CACHE PATH "Install prefix of vendored third-party libs")
-endif()
-
-# Reuse the core library (detector + recognizer + database) via add_subdirectory.
-# This is the same pattern used by the ROS1/ROS2 packages.
-add_subdirectory(${_PROJECT_ROOT}/src/face_recognition_core
-                 ${CMAKE_BINARY_DIR}/face_recognition_core_build)
-
-# The core library exports its own headers transitively, but we also need
-# OpenCV headers in this target (for highgui/videoio/imgproc/imgcodecs).
-# face_recognition_core only links against ${OpenCV_LIBS}, so the OpenCV
-# include directory does not propagate. Pull it in explicitly.
+# The core target propagates its own headers transitively, but this target also
+# uses OpenCV directly (highgui / videoio / imgproc / imgcodecs).
 find_package(OpenCV 4.5 REQUIRED)
 find_package(Threads REQUIRED)
 
@@ -69,7 +44,7 @@ target_include_directories(face_recognition_app PRIVATE
 )
 
 target_link_libraries(face_recognition_app PRIVATE
-    face_recognition_core
+    face_recognition_core::face_recognition_core
     ${OpenCV_LIBS}
     Threads::Threads
     dl
@@ -93,6 +68,17 @@ endforeach()
 set_target_properties(face_recognition_app PROPERTIES
     OUTPUT_NAME "face_recognition_app"
     RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}"
+    # Let the INSTALLED binary resolve libface_recognition_core.so from
+    # <prefix>/lib without any LD_LIBRARY_PATH setup, exactly like face_db_web.
+    INSTALL_RPATH "$ORIGIN/../lib"
+)
+
+# -----------------------------------------------------------------------------
+# Install into the project-wide install root (install/bin) so there is exactly
+# one place users pick binaries from, instead of a build/ dir inside the package.
+# -----------------------------------------------------------------------------
+install(TARGETS face_recognition_app
+    RUNTIME DESTINATION bin
 )
 
 message(STATUS "face_recognition_standalone: built face_recognition_app")

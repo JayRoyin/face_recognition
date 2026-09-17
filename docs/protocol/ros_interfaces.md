@@ -109,6 +109,8 @@ faces:
 | `/face_db/remove` | `RemoveFace` | 按 ID 删除 |
 | `/face_db/list` | `ListFaces` | 列出全部记录 |
 | `/face_db/clear` | `ClearFaces` | 清空人脸库 |
+| `/face_db/add_template` | `AddTemplate` | 给已有身份追加一"枪"（多模板） |
+| `/face_db/verify` | `Verify` | 对全库打分并返回判定（不入库） |
 
 ### 3.1 AddFace.srv
 
@@ -167,6 +169,47 @@ bool  success
 ```
 
 请求为空，`success` 恒为 `true`。
+
+---
+
+### 3.5 AddTemplate.srv
+
+```
+string id           # 目标身份 id（AddFace / ListFaces 返回）
+string image_data   # base64 编码的 JPEG/PNG，必须是同一个人
+---
+bool success
+string message
+int32 templates     # 调用后该身份的模板总数
+```
+
+用于**多模板**：外观变化（戴/摘眼镜、换发型、换机位光照）时单模板会让本人分数被
+陌生人超过，补一"枪"是最直接的修复。写入路径与其它入口共用同一套质量门控
+（见 [../module/core.md](../module/core.md) 的 `make_embedding()`），不会把不同规则
+产生的特征混进同一个库。
+
+### 3.6 Verify.srv
+
+```
+string image_data   # base64 编码的 JPEG/PNG
+float32 threshold    # <= 0 表示使用节点的 confidence_threshold 参数
+---
+bool success
+string message
+bool matched
+string id
+string name
+float32 score        # 与获胜身份最佳模板的原始余弦
+float32 threshold
+string decision      # ACCEPT / REJECT / NO_FACE / ERROR
+FaceInfo[] candidates   # 全部身份，按分数降序
+```
+
+等价于 `face_recognition_app verify --image <file>`，但不需要把图片落盘。
+
+- `decision = NO_FACE` 且 `message` 以 `refused by quality gate:` 开头 → **人脸本身
+  不合格**（太小 / 关键点不可用），与"不是同一个人"是两码事；
+- `decision = REJECT` → 人脸合格但所有身份都低于阈值，`candidates` 里能看到具体差多少。
 
 ---
 

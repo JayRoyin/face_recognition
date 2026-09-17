@@ -6,31 +6,31 @@
 
 - 源码：`src/face_recognition_standalone/`
 - 依赖：OpenCV + ONNX Runtime + SQLite3 + pthread
-- 产物：`src/face_recognition_standalone/build/face_recognition_app`
+- 产物：`install/bin/face_recognition_app`
 
 ---
 
 ## 1. 编译
 
 ```bash
-./build.sh STANDALONE          # 或 make -C src/face_recognition_standalone/build -j4
+./build.sh STANDALONE          # 或 make -C build/standalone -j4
 ```
 
 产物：
 
 ```
-src/face_recognition_standalone/build/face_recognition_app         # 主程序
-src/face_recognition_standalone/build/face_recognition_core_build/libface_recognition_core.so*
+install/bin/face_recognition_app                 # 主程序
+install/lib/libface_recognition_core.so*         # 共享核心库（与 web / ROS 同一份）
 ```
 
-> `STANDALONE` 目标不需要任何 ROS 包，也不需要 `source install/setup.bash`。
+> `STANDALONE` 目标不需要任何 ROS 包，也不需要 `source install/ros2/setup.bash`。
 
 ---
 
 ## 2. 命令总览
 
 ```bash
-APP=./src/face_recognition_standalone/build/face_recognition_app
+APP=./install/bin/face_recognition_app
 $APP help
 ```
 

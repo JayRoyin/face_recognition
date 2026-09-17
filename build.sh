@@ -14,8 +14,42 @@ TP_DIR="$PROJECT_ROOT/third_party"
 TP_SQLITE_DIR="$TP_DIR/sqlite3"
 TP_SPATIALITE_DIR="$TP_DIR/spatialite"
 
+# -----------------------------------------------------------------------------
+# Build layout — every artifact stays under the project root; nothing is written
+# inside a source package directory.
+#
+#     build/<target>/            intermediate build trees (gitignored)
+#     install/bin|lib|include/   the single place users pick binaries from
+#     install/ros1|ros2/         ROS workspaces (colcon / catkin need their own
+#                                install space, so they get a dedicated subtree
+#                                instead of being mixed into install/)
+#     log/                       logs
+#
+# Rationale: build trees used to live next to each package
+# (src/face_recognition_core/build, src/face_db_web/build, ...), which made the
+# same core library get compiled once per consumer and left binaries scattered
+# across the tree. Keeping one build root and one install root makes
+# "what did I actually build?" answerable with a single `ls`.
+# -----------------------------------------------------------------------------
+BUILD_ROOT="$PROJECT_ROOT/build"
+INSTALL_ROOT="$PROJECT_ROOT/install"
+LOG_ROOT="$PROJECT_ROOT/log"
+
+BUILD_CORE_DIR="$BUILD_ROOT/core"
+BUILD_WEB_DIR="$BUILD_ROOT/web"
+BUILD_STANDALONE_DIR="$BUILD_ROOT/standalone"
+BUILD_VENDORED_DIR="$BUILD_ROOT/vendored"
+BUILD_TP_SQLITE_DIR="$BUILD_VENDORED_DIR/sqlite3"
+BUILD_TP_SPATIALITE_DIR="$BUILD_VENDORED_DIR/spatialite"
+BUILD_ROS1_DIR="$BUILD_ROOT/ros1"
+BUILD_ROS2_DIR="$BUILD_ROOT/ros2"
+
+INSTALL_ROS2_DIR="$INSTALL_ROOT/ros2"
+
+ROS1_INTERFACES_DIR="$SRC_DIR/face_recognition_ros1_interfaces"
+
 # Vendored SQLite prefix — exported so consumer CMakeLists can pick it up.
-export FACE_RECOGNITION_VENDORED_PREFIX="$PROJECT_ROOT/install/vendored"
+export FACE_RECOGNITION_VENDORED_PREFIX="$INSTALL_ROOT/vendored"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -197,21 +231,19 @@ clean_build() {
     log_info "Cleaning build artifacts..."
 
     local dirs=(
-        "$PROJECT_ROOT/build"
+        # current layout
+        "$BUILD_ROOT"
+        "$INSTALL_ROOT"
+        "$LOG_ROOT"
         "$PROJECT_ROOT/devel"
-        "$PROJECT_ROOT/install"
-        "$PROJECT_ROOT/log"
-        "$CORE_DIR/build"
-        "$CORE_DIR/install"
-        "$CORE_DIR/log"
-        "$ROS1_DIR/build"
-        "$ROS1_DIR/install"
-        "$ROS1_DIR/log"
-        "$ROS2_DIR/build"
-        "$ROS2_DIR/install"
-        "$ROS2_DIR/log"
+        # legacy layout: build trees that used to live next to each package
+        "$CORE_DIR/build"   "$CORE_DIR/install"   "$CORE_DIR/log"
+        "$ROS1_DIR/build"   "$ROS1_DIR/devel"     "$ROS1_DIR/install" "$ROS1_DIR/log"
+        "$ROS2_DIR/build"   "$ROS2_DIR/install"   "$ROS2_DIR/log"
         "$WEB_DIR/build"
         "$STANDALONE_DIR/build"
+        "$TP_SQLITE_DIR/build"
+        "$TP_SPATIALITE_DIR/build"
     )
 
     for dir in "${dirs[@]}"; do
@@ -258,7 +290,7 @@ build_vendored_sqlite() {
     fi
 
     local prefix="$FACE_RECOGNITION_VENDORED_PREFIX"
-    local build_dir="$TP_SQLITE_DIR/build"
+    local build_dir="$BUILD_TP_SQLITE_DIR"
     mkdir -p "$build_dir"
 
     cmake -S "$TP_SQLITE_DIR" -B "$build_dir" \
@@ -316,7 +348,7 @@ build_vendored_spatialite() {
     fi
 
     local prefix="$FACE_RECOGNITION_VENDORED_PREFIX"
-    local build_dir="$TP_SPATIALITE_DIR/build"
+    local build_dir="$BUILD_TP_SPATIALITE_DIR"
     mkdir -p "$build_dir"
 
     # GEOS/PROJ headers come from the system; sqlite3 from the vendored build.
@@ -372,14 +404,15 @@ build_core() {
         return 1
     fi
 
-    local build_dir="$CORE_DIR/build"
+    local build_dir="$BUILD_CORE_DIR"
     mkdir -p "$build_dir"
 
-    cd "$build_dir"
-
-    cmake "$CORE_DIR" \
+    # Out-of-source configure + build into the shared build root, then install
+    # into the single install root so every consumer can link the SAME
+    # libface_recognition_core.so instead of compiling its own copy.
+    cmake -S "$CORE_DIR" -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$PROJECT_ROOT/install" \
+        -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
         >> "$BUILD_LOG" 2>&1
 
     if [ $? -ne 0 ]; then
@@ -388,14 +421,23 @@ build_core() {
     fi
 
     log_info "Compiling..."
-    make -j$(nproc) >> "$BUILD_LOG" 2>&1
+    cmake --build "$build_dir" -j"$(nproc)" >> "$BUILD_LOG" 2>&1
 
     if [ $? -ne 0 ]; then
         log_error "Compile failed, see log: $BUILD_LOG"
         return 1
     fi
 
-    log_success "Core library compiled successfully"
+    log_info "Installing to $INSTALL_ROOT ..."
+    cmake --install "$build_dir" >> "$BUILD_LOG" 2>&1
+
+    if [ $? -ne 0 ]; then
+        log_error "Install failed, see log: $BUILD_LOG"
+        return 1
+    fi
+
+    log_success "Core library compiled and installed"
+    log_info "Library: $INSTALL_ROOT/lib/libface_recognition_core.so*"
     return 0
 }
 
@@ -409,14 +451,13 @@ build_web() {
         return 1
     fi
 
-    local build_dir="$WEB_DIR/build"
+    local build_dir="$BUILD_WEB_DIR"
     mkdir -p "$build_dir"
 
-    cd "$build_dir"
-
-    cmake "$WEB_DIR" \
+    cmake -S "$WEB_DIR" -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_INSTALL_PREFIX="$PROJECT_ROOT/install" \
+        -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
+        -DCMAKE_PREFIX_PATH="$INSTALL_ROOT" \
         >> "$BUILD_LOG" 2>&1
 
     if [ $? -ne 0 ]; then
@@ -425,21 +466,22 @@ build_web() {
     fi
 
     log_info "Compiling..."
-    make -j$(nproc) >> "$BUILD_LOG" 2>&1
+    cmake --build "$build_dir" -j"$(nproc)" >> "$BUILD_LOG" 2>&1
 
     if [ $? -ne 0 ]; then
         log_error "Compile failed, see log: $BUILD_LOG"
         return 1
     fi
 
-    log_info "Installing to $PROJECT_ROOT/install ..."
-    make install >> "$BUILD_LOG" 2>&1
+    log_info "Installing to $INSTALL_ROOT ..."
+    cmake --install "$build_dir" >> "$BUILD_LOG" 2>&1
     if [ $? -ne 0 ]; then
         log_error "Install failed, see log: $BUILD_LOG"
         return 1
     fi
 
     log_success "Web interface compiled and installed"
+    log_info "Binary : $INSTALL_ROOT/bin/face_db_web"
     return 0
 }
 
@@ -453,14 +495,13 @@ build_standalone() {
         return 1
     fi
 
-    local build_dir="$STANDALONE_DIR/build"
+    local build_dir="$BUILD_STANDALONE_DIR"
     mkdir -p "$build_dir"
 
-    cd "$build_dir"
-
-    cmake "$STANDALONE_DIR" \
+    cmake -S "$STANDALONE_DIR" -B "$build_dir" \
         -DCMAKE_BUILD_TYPE=Release \
-        -DCMAKE_PREFIX_PATH="$PROJECT_ROOT/install" \
+        -DCMAKE_PREFIX_PATH="$INSTALL_ROOT" \
+        -DCMAKE_INSTALL_PREFIX="$INSTALL_ROOT" \
         -DFACE_RECOGNITION_VENDORED_PREFIX="$FACE_RECOGNITION_VENDORED_PREFIX" \
         >> "$BUILD_LOG" 2>&1
 
@@ -470,15 +511,50 @@ build_standalone() {
     fi
 
     log_info "Compiling..."
-    make -j$(nproc) >> "$BUILD_LOG" 2>&1
+    cmake --build "$build_dir" -j"$(nproc)" >> "$BUILD_LOG" 2>&1
 
     if [ $? -ne 0 ]; then
         log_error "Compile failed, see log: $BUILD_LOG"
         return 1
     fi
 
-    log_success "Standalone app compiled successfully"
-    log_info "Binary : $build_dir/face_recognition_app"
+    log_info "Installing to $INSTALL_ROOT ..."
+    cmake --install "$build_dir" >> "$BUILD_LOG" 2>&1
+    if [ $? -ne 0 ]; then
+        log_error "Install failed, see log: $BUILD_LOG"
+        return 1
+    fi
+
+    log_success "Standalone app compiled and installed"
+    log_info "Binary : $INSTALL_ROOT/bin/face_recognition_app"
+    return 0
+}
+
+run_tests() {
+    log_info "=========================================="
+    log_info "Running regression tests (non-ROS front-end)"
+    log_info "=========================================="
+
+    local script="$PROJECT_ROOT/tests/regression.sh"
+    if [ ! -f "$script" ]; then
+        log_error "Test script not found: $script"
+        return 1
+    fi
+    if [ ! -x "$INSTALL_ROOT/bin/face_recognition_app" ]; then
+        log_error "face_recognition_app is missing — run ./build.sh STANDALONE first"
+        return 1
+    fi
+
+    chmod +x "$script"
+
+    # The suite drives the installed binary only, and each test creates its own
+    # temp database — it never reads or writes the operator's gallery.
+    if ! FACE_APP="$INSTALL_ROOT/bin/face_recognition_app" "$script"; then
+        log_error "Regression tests failed"
+        return 1
+    fi
+
+    log_success "Regression tests passed"
     return 0
 }
 
@@ -499,10 +575,46 @@ build_ros1() {
 
     source /opt/ros/noetic/setup.bash
 
-    cd "$ROS1_DIR"
+    # Make the installed face_recognition_core package discoverable. Exported
+    # rather than passed as -DCMAKE_PREFIX_PATH: catkin_make builds its own
+    # prefix path from the environment plus the workspace, and a hard -D would
+    # replace it and hide the sibling catkin packages.
+    export CMAKE_PREFIX_PATH="$INSTALL_ROOT:${CMAKE_PREFIX_PATH:-}"
+
+    # Keep a conda prefix out of the dependency resolution — see the long note in
+    # build_ros2() for the libgdal/libcurl failure this prevents.
+    _conda_prefix="${CONDA_PREFIX:-}"
+    unset CONDA_PREFIX
+    unset PYTHON_EXECUTABLE PYTHON_LIBRARY PYTHON_INCLUDE_DIR
+    _ros_ignore_args=""
+    if [ -n "$_conda_prefix" ] && [ -d "$_conda_prefix" ]; then
+        _ros_ignore_args="-DCMAKE_IGNORE_PREFIX_PATH=$_conda_prefix"
+    fi
+    _ros_python_args=""
+    if [ -x /usr/bin/python3 ]; then
+        _ros_python_args="-DPython3_EXECUTABLE=/usr/bin/python3 -DPython3_ROOT_DIR=/usr \
+-DPYTHON_EXECUTABLE=/usr/bin/python3 -DPYTHON_INCLUDE_DIR=/usr/include/python3.10 \
+-DPYTHON_LIBRARY=/usr/lib/x86_64-linux-gnu/libpython3.10.so"
+    fi
+
+    # `catkin_make` expects a workspace ROOT containing src/<packages>. Running
+    # it inside a package directory — which is what this script used to do —
+    # makes it look for packages in the package's own src/ and find none.
+    # Build a real workspace under the shared build root instead, with the ROS1
+    # packages symlinked into its src/ so the source tree stays untouched and
+    # build/ + devel/ end up under build/ros1/.
+    #
+    # NOTE: ROS1 is not installed on the current development host, so this path
+    # is not compile-verified here.
+    mkdir -p "$BUILD_ROS1_DIR/src"
+    ln -sfn "$ROS1_DIR"            "$BUILD_ROS1_DIR/src/face_recognition_ros1"
+    ln -sfn "$ROS1_INTERFACES_DIR" "$BUILD_ROS1_DIR/src/face_recognition_ros1_interfaces"
+
+    cd "$BUILD_ROS1_DIR"
 
     catkin_make \
         -DCMAKE_BUILD_TYPE=Release \
+        $_ros_ignore_args $_ros_python_args \
         >> "$BUILD_LOG" 2>&1
 
     if [ $? -ne 0 ]; then
@@ -511,7 +623,8 @@ build_ros1() {
     fi
 
     log_success "ROS1 version compiled successfully"
-    log_info "Source: source $ROS1_DIR/devel/setup.bash"
+    log_info "Workspace: $BUILD_ROS1_DIR"
+    log_info "Source: source $BUILD_ROS1_DIR/devel/setup.bash"
     return 0
 }
 
@@ -532,11 +645,85 @@ build_ros2() {
 
     source /opt/ros/humble/setup.bash
 
+    # Make the installed face_recognition_core package discoverable. Exported
+    # rather than passed as -DCMAKE_PREFIX_PATH: ament already assembles its own
+    # prefix path (workspace + dependencies) and a hard -D would replace it and
+    # break finding face_recognition_ros2_interfaces.
+    export CMAKE_PREFIX_PATH="$INSTALL_ROOT:${CMAKE_PREFIX_PATH:-}"
+
+    # Force the SYSTEM Python. If a conda prefix is active, CMake finds conda's
+    # python3, links $CONDA_PREFIX/lib/libpython3.*.so, and then emits
+    #   -Wl,-rpath-link,$CONDA_PREFIX/lib
+    # ld searches that directory FIRST when resolving the DT_NEEDED libraries of
+    # the system libgdal.so that OpenCV pulls in, finds conda's libcurl (which
+    # does not provide CURL_OPENSSL_4) and the link dies with
+    #   /lib/libgdal.so.30: undefined reference to `curl_easy_cleanup@CURL_OPENSSL_4'
+    # The host libraries are fine — the wrong directory is being searched. ROS2
+    # Humble also targets Python 3.10, so pointing at conda's 3.13 is wrong
+    # regardless.
+    # A conda prefix must not contribute ANY dependency to this build. It ships
+    # its own libpython, libcurl, libtiff, spdlog and fmt, and CMake then records
+    # $CONDA_PREFIX/lib in the link line's -rpath AND -rpath-link. `ld` searches
+    # that directory FIRST when resolving the DT_NEEDED libraries of the system
+    # libgdal.so that OpenCV pulls in, finds conda's libcurl (which provides no
+    # CURL_OPENSSL_4 symbol version) and the link fails with
+    #   /lib/libgdal.so.30: undefined reference to `curl_easy_cleanup@CURL_OPENSSL_4'
+    # Nothing is wrong with the host libraries — the wrong directory is searched.
+    # (CMAKE_IGNORE_PREFIX_PATH requires CMake >= 3.23.)
+    _conda_prefix="${CONDA_PREFIX:-}"
+    unset CONDA_PREFIX
+    unset PYTHON_EXECUTABLE PYTHON_LIBRARY PYTHON_INCLUDE_DIR
+    _ros_ignore_args=""
+    if [ -n "$_conda_prefix" ] && [ -d "$_conda_prefix" ]; then
+        _ros_ignore_args="-DCMAKE_IGNORE_PREFIX_PATH=$_conda_prefix"
+    fi
+    _ros_python_args=""
+    if [ -x /usr/bin/python3 ]; then
+        _ros_python_args="-DPython3_EXECUTABLE=/usr/bin/python3 -DPython3_ROOT_DIR=/usr"
+    fi
+    # rosidl_generator_py resolves Python through python_cmake_module, i.e. the
+    # LEGACY FindPythonInterp / FindPythonLibs variables (PYTHON_EXECUTABLE,
+    # PYTHON_LIBRARY, PYTHON_INCLUDE_DIR) — NOT Python3_*. Pinning only Python3_*
+    # leaves conda free to win, which links $CONDA_PREFIX/lib/libpython3.13.so
+    # and makes CMake emit -Wl,-rpath-link,$CONDA_PREFIX/lib. That directory is
+    # then searched FIRST for the DT_NEEDED libraries of the system libgdal.so
+    # that OpenCV pulls in, and conda's libcurl (no CURL_OPENSSL_4) shadows the
+    # system one -> "undefined reference to `curl_easy_cleanup@CURL_OPENSSL_4'".
+    for _p in /usr/lib/x86_64-linux-gnu /usr/lib; do
+        if [ -e "$_p/libpython3.10.so" ]; then
+            _ros_python_args="$_ros_python_args -DPYTHON_LIBRARY=$_p/libpython3.10.so"
+            break
+        fi
+    done
+    if [ -f /usr/include/python3.10/Python.h ]; then
+        _ros_python_args="$_ros_python_args -DPYTHON_INCLUDE_DIR=/usr/include/python3.10"
+    fi
+    if [ -x /usr/bin/python3 ]; then
+        _ros_python_args="$_ros_python_args -DPYTHON_EXECUTABLE=/usr/bin/python3"
+    fi
+
+    # Build bases are pinned under the project build root so that colcon no
+    # longer writes build/ install/ log/ next to the sources and no longer
+    # shares install/ with the plain-CMake targets (which would put two
+    # different layouts in one directory).
+    #
+    # `face_recognition_core` is deliberately NOT selected: face_recognition_ros2
+    # already pulls the core sources in through add_subdirectory(), so selecting
+    # it as a package as well compiled the same library twice per build and left
+    # an unused copy in the install space.
     cd "$PROJECT_ROOT"
 
-    colcon build \
-        --packages-select face_recognition_core face_recognition_ros2_interfaces face_recognition_ros2 \
-        --cmake-args -DCMAKE_BUILD_TYPE=Release \
+    # NOTE: --log-base is a GLOBAL colcon option and must precede the
+    # subcommand; --build-base/--install-base/--base-paths belong to `build`.
+    #
+    # `face_recognition_core` is NOT selected: face_recognition_ros2 links the
+    # installed core package instead of compiling its own copy.
+    colcon --log-base "$LOG_ROOT/ros2" build \
+        --base-paths "$SRC_DIR" \
+        --packages-select face_recognition_ros2_interfaces face_recognition_ros2 \
+        --build-base "$BUILD_ROS2_DIR" \
+        --install-base "$INSTALL_ROS2_DIR" \
+        --cmake-args -DCMAKE_BUILD_TYPE=Release $_ros_python_args $_ros_ignore_args \
         --event-handlers console_direct+ \
         >> "$BUILD_LOG" 2>&1
 
@@ -546,7 +733,8 @@ build_ros2() {
     fi
 
     log_success "ROS2 version compiled successfully"
-    log_info "Source: source $PROJECT_ROOT/install/setup.bash"
+    log_info "Install space: $INSTALL_ROS2_DIR"
+    log_info "Source: source $INSTALL_ROS2_DIR/setup.bash"
     return 0
 }
 
@@ -556,26 +744,26 @@ verify_build() {
 
     case "$target" in
         CORE)
-            if [ -f "$CORE_DIR/build/libface_recognition_core.so" ]; then
+            if compgen -G "$INSTALL_ROOT/lib/libface_recognition_core.so*" > /dev/null; then
                 log_success "Core library verified"
             else
-                log_error "Core library verification failed"
+                log_error "Core library verification failed (expected $INSTALL_ROOT/lib/libface_recognition_core.so*)"
                 success=false
             fi
             ;;
         WEB)
-            if [ -f "$WEB_DIR/build/face_db_web" ]; then
+            if [ -f "$INSTALL_ROOT/bin/face_db_web" ]; then
                 log_success "Web server verified"
             else
-                log_error "Web server verification failed"
+                log_error "Web server verification failed (expected $INSTALL_ROOT/bin/face_db_web)"
                 success=false
             fi
             ;;
         STANDALONE)
-            if [ -f "$STANDALONE_DIR/build/face_recognition_app" ]; then
+            if [ -f "$INSTALL_ROOT/bin/face_recognition_app" ]; then
                 log_success "Standalone app verified"
             else
-                log_error "Standalone app verification failed"
+                log_error "Standalone app verification failed (expected $INSTALL_ROOT/bin/face_recognition_app)"
                 success=false
             fi
             ;;
@@ -588,18 +776,18 @@ verify_build() {
             fi
             ;;
         ROS1)
-            if [ -f "$ROS1_DIR/devel/lib/face_recognition_ros1/face_recognition_node" ]; then
+            if [ -f "$BUILD_ROS1_DIR/devel/lib/face_recognition_ros1/face_recognition_node" ]; then
                 log_success "ROS1 node verified"
             else
-                log_error "ROS1 node verification failed"
+                log_error "ROS1 node verification failed (expected $BUILD_ROS1_DIR/devel/lib/face_recognition_ros1/face_recognition_node)"
                 success=false
             fi
             ;;
         ROS2)
-            if [ -f "$PROJECT_ROOT/install/face_recognition_ros2/lib/face_recognition_ros2/face_recognition_node" ]; then
+            if [ -f "$INSTALL_ROS2_DIR/face_recognition_ros2/lib/face_recognition_ros2/face_recognition_node" ]; then
                 log_success "ROS2 node verified"
             else
-                log_error "ROS2 node verification failed"
+                log_error "ROS2 node verification failed (expected $INSTALL_ROS2_DIR/face_recognition_ros2/lib/face_recognition_ros2/face_recognition_node)"
                 success=false
             fi
             ;;
@@ -617,6 +805,34 @@ verify_build() {
         return 0
     else
         return 1
+    fi
+}
+
+print_artifacts() {
+    echo ""
+    log_info "Build layout:"
+    log_info "  build trees : $BUILD_ROOT/{core,web,standalone,vendored,ros1,ros2}"
+    log_info "  install root: $INSTALL_ROOT"
+    local core_lib=false
+    if compgen -G "$INSTALL_ROOT/lib/libface_recognition_core.so*" > /dev/null; then
+        log_info "  artifact    : $INSTALL_ROOT/lib/libface_recognition_core.so*"
+        core_lib=true
+    fi
+    local candidates=(
+        "$INSTALL_ROOT/bin/face_recognition_app"
+        "$INSTALL_ROOT/bin/face_db_web"
+        "$INSTALL_ROS2_DIR/face_recognition_ros2/lib/face_recognition_ros2/face_recognition_node"
+        "$BUILD_ROS1_DIR/devel/lib/face_recognition_ros1/face_recognition_node"
+    )
+    local any=false
+    for f in "${candidates[@]}"; do
+        if [ -f "$f" ]; then
+            log_info "  artifact    : $f"
+            any=true
+        fi
+    done
+    if [ "$any" = "false" ] && [ "$core_lib" = "false" ]; then
+        log_warn "No artifacts found yet - did the build run?"
     fi
 }
 
@@ -671,6 +887,9 @@ main() {
                 build_standalone && build_success=true || build_success=false
             fi
             ;;
+        TEST)
+            run_tests && build_success=true || build_success=false
+            ;;
         MODELS)
             download_models && build_success=true || build_success=false
             ;;
@@ -720,12 +939,22 @@ main() {
                 build_standalone && build_success=true || build_success=false
             fi
 
+            # ROS is optional: a host with only one of Noetic/Humble (or neither)
+            # must still get a successful ALL build for the non-ROS targets.
             if [ "$build_success" = "true" ]; then
-                build_ros1 || { log_error "ROS1 build failed"; build_success=false; }
+                if check_ros_environment "ROS1" 2>/dev/null; then
+                    build_ros1 || { log_error "ROS1 build failed"; build_success=false; }
+                else
+                    log_warn "ROS1 (Noetic) not found - skipping ROS1 target"
+                fi
             fi
 
             if [ "$build_success" = "true" ]; then
-                build_ros2 || { log_error "ROS2 build failed"; build_success=false; }
+                if check_ros_environment "ROS2" 2>/dev/null; then
+                    build_ros2 || { log_error "ROS2 build failed"; build_success=false; }
+                else
+                    log_warn "ROS2 (Humble) not found - skipping ROS2 target"
+                fi
             fi
             ;;
         *)
@@ -738,6 +967,8 @@ main() {
     echo "========================================" | tee -a "$BUILD_LOG"
     echo "Build end time: $(date)" | tee -a "$BUILD_LOG"
     echo "========================================" | tee -a "$BUILD_LOG"
+
+    print_artifacts
 
     if [ "$build_success" = "true" ]; then
         log_success "Build complete! Log: $BUILD_LOG"

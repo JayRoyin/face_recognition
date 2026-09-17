@@ -24,6 +24,8 @@ add_service_files(
     RemoveFace.srv
     ListFaces.srv
     ClearFaces.srv
+    AddTemplate.srv
+    Verify.srv
 )
 
 generate_messages(
