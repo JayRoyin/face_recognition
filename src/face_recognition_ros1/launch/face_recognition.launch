@@ -2,10 +2,13 @@
   <arg name="image_topic" default="/image_raw" />
   <arg name="result_topic" default="/face/recognition_result" />
   <arg name="confidence_threshold" default="0.5" />
-  <arg name="db_path" default="/tmp/face_db/faces.db" />
-  <arg name="faces_dir" default="/tmp/face_db/faces" />
-  <arg name="detection_model" default="/models/det_10g.onnx" />
-  <arg name="recognition_model" default="/models/w600k_r50.onnx" />
+  <arg name="db_path" default="/data/hhqs_data/face_db/faces.db" />
+  <arg name="faces_dir" default="/data/hhqs_data/face_db/faces" />
+  <!-- $(find ...) is <repo>/src/face_recognition_ros1, so ../.. is the repository
+       root, where models/ lives. The previous "/models/..." pointed at the
+       filesystem root and never resolved. -->
+  <arg name="detection_model" default="$(find face_recognition_ros1)/../../models/det_10g.onnx" />
+  <arg name="recognition_model" default="$(find face_recognition_ros1)/../../models/w600k_r50.onnx" />
 
   <node pkg="face_recognition_ros1" type="face_recognition_node"
         name="face_recognition_node" output="screen">

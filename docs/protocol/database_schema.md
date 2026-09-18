@@ -3,8 +3,8 @@
 所有人脸数据存储在**单个 SQLite 文件**中，表结构由 `FaceDatabase::initialize()`
 用 `CREATE TABLE IF NOT EXISTS` 自动创建，无需手工建库。
 
-- 默认路径：`/tmp/face_db/faces.db`
-- 缩略图目录：`/tmp/face_db/faces`
+- 默认路径：`/data/hhqs_data/face_db/faces.db`
+- 缩略图目录：`/data/hhqs_data/face_db/faces`
 - 建表语句：`src/face_recognition_core/src/face_database.cpp`
 
 ---
@@ -75,7 +75,7 @@ CREATE INDEX IF NOT EXISTS idx_face_templates_face_id
 ## 3. 文件与记录的对应关系
 
 ```
-/tmp/face_db/
+/data/hhqs_data/face_db/
 ├── faces.db                              # SQLite 库
 └── faces/
     ├── 550e8400-e29b-41d4-a716-446655440000.jpg    ← faces.id 一致
@@ -91,7 +91,7 @@ CREATE INDEX IF NOT EXISTS idx_face_templates_face_id
 ## 4. 常用运维 SQL
 
 ```bash
-DB=/tmp/face_db/faces.db
+DB=/data/hhqs_data/face_db/faces.db
 
 # 记录总数
 sqlite3 "$DB" "SELECT COUNT(*) FROM faces;"
@@ -142,10 +142,10 @@ sqlite3 "$DB" "DELETE FROM faces WHERE id = '<UUID>';"
 
 | 通路 | 默认 DB 路径 | 指定参数 |
 |---|---|---|
-| `face_recognition_standalone` | `/tmp/face_db/faces.db` | `--db` |
+| `face_recognition_standalone` | `/data/hhqs_data/face_db/faces.db` | `--db` |
 | `face_db_web` | 无默认，必填 | `--db` |
-| ROS2 节点 | `/tmp/face_db/faces.db` | 参数 `db_path` |
-| ROS1 节点 | `/tmp/face_db/faces.db` | 参数 `db_path` |
+| ROS2 节点 | `/data/hhqs_data/face_db/faces.db` | 参数 `db_path` |
+| ROS1 节点 | `/data/hhqs_data/face_db/faces.db` | 参数 `db_path` |
 
 使用同一个 `--db` 即可三向互通。并发写需外部串行化，详见
 [../services/face_database.md](../services/face_database.md#8-并发与多进程)。

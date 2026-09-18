@@ -16,10 +16,18 @@
 
 include(CMakeFindDependencyMacro)
 
-# The exported target already carries absolute paths for OpenCV, the vendored
-# SQLite3, ONNX Runtime and libuuid. Threads is the only dependency referenced
-# as a CMake target, so it is the only one that must be resolved again here.
+# OpenCV is a PUBLIC dependency, and the exported target references its libraries
+# by target name (opencv_core, opencv_imgproc, ...). Those targets only exist
+# after OpenCVConfig.cmake has run, so resolving it here is required for the
+# package to be usable on its own.
+find_dependency(OpenCV 4.5)
+
+# Threads is referenced as a CMake target as well.
 find_dependency(Threads)
+
+# The remaining dependencies (vendored SQLite3, ONNX Runtime, libuuid) are
+# recorded as absolute paths by design: this project pins the exact SQLite3 it
+# was built against, so the path is part of the contract.
 
 include("${CMAKE_CURRENT_LIST_DIR}/face_recognition_coreTargets.cmake")
 

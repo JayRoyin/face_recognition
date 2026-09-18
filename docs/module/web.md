@@ -27,12 +27,12 @@ sudo apt-get install -y libmicrohttpd-dev
 
 ```bash
 # 先确保人脸图片存档目录存在
-mkdir -p /tmp/face_db/faces
+mkdir -p /data/hhqs_data/face_db/faces
 
 ./install/bin/face_db_web \
     --port 8080 \
-    --db /tmp/face_db/faces.db \
-    --faces-dir /tmp/face_db/faces
+    --db /data/hhqs_data/face_db/faces.db \
+    --faces-dir /data/hhqs_data/face_db/faces
 ```
 
 ### 2.1 命令行参数
@@ -62,7 +62,7 @@ mkdir -p /tmp/face_db/faces
 
 ```bash
 ./install/bin/face_db_web --port 8080 \
-    --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces
+    --db /data/hhqs_data/face_db/faces.db --faces-dir /data/hhqs_data/face_db/faces
 ```
 
 #### 为什么默认拒绝"无特征"录入
@@ -99,8 +99,8 @@ export FACE_RECOGNITION_MODEL=$(pwd)/models/w600k_r50.onnx
 ```bash
 ./install/bin/face_db_web \
     --port 8080 \
-    --db /tmp/face_db/faces.db \
-    --faces-dir /tmp/face_db/faces \
+    --db /data/hhqs_data/face_db/faces.db \
+    --faces-dir /data/hhqs_data/face_db/faces \
     --detection-model "$(pwd)/models/det_10g.onnx" \
     --recognition-model "$(pwd)/models/w600k_r50.onnx"
 ```
@@ -109,8 +109,8 @@ export FACE_RECOGNITION_MODEL=$(pwd)/models/w600k_r50.onnx
 
 ```
 Face DB Web running on http://localhost:8080
-Database:        /tmp/face_db/faces.db
-Faces dir:       /tmp/face_db/faces
+Database:        /data/hhqs_data/face_db/faces.db
+Faces dir:       /data/hhqs_data/face_db/faces
 Embedding extraction: ENABLED
 Press Ctrl+C to stop
 ```
@@ -228,7 +228,7 @@ curl -X POST http://localhost:8080/api/faces/clear
 ./install/bin/face_recognition_app web --port 8080
 # 等价于：
 #   ./install/bin/face_db_web --port 8080 \
-#       --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces \
+#       --db /data/hhqs_data/face_db/faces.db --faces-dir /data/hhqs_data/face_db/faces \
 #       --detection-model models/det_10g.onnx \
 #       --recognition-model models/w600k_r50.onnx
 ```

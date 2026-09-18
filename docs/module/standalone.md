@@ -167,8 +167,8 @@ $APP run --camera 0 --width 0 --height 0
 |---|---|---|
 | `--detection-model` | `models/det_10g.onnx` | 检测模型 |
 | `--recognition-model` | `models/w600k_r50.onnx` | 识别模型 |
-| `--db` | `/tmp/face_db/faces.db` | SQLite 数据库 |
-| `--faces-dir` | `/tmp/face_db/faces` | 缩略图目录 |
+| `--db` | `/data/hhqs_data/face_db/faces.db` | SQLite 数据库 |
+| `--faces-dir` | `/data/hhqs_data/face_db/faces` | 缩略图目录 |
 | `--detection-threshold` | `0.5` | 检测置信度阈值 |
 | `--recognition-threshold` | `0.5` | 识别相似度阈值，取值依据见 [§7.1](#71-识别阈值) |
 | `--nms-threshold` | `0.5` | NMS IoU 阈值 |
@@ -380,7 +380,7 @@ $APP add-bulk --dir ./photos/ --recursive
 # 先用 list 拿到 id
 $APP list
 $APP add-template --id <uuid> --image ~/photos/alice_no_glasses.jpg
-# OK template added to id=<uuid> (stored /tmp/face_db/faces/<uuid>_t1.jpg)
+# OK template added to id=<uuid> (stored /data/hhqs_data/face_db/faces/<uuid>_t1.jpg)
 #     total templates for this id: 2
 ```
 
@@ -426,7 +426,7 @@ $APP backfill --all
 ```bash
 $APP list
 # Faces in DB: 12
-#   id=xxx name=张三  title=工程师  scene=office map=B座3F  emb=yes  templates=1 img=/tmp/face_db/faces/xxx.jpg
+#   id=xxx name=张三  title=工程师  scene=office map=B座3F  emb=yes  templates=1 img=/data/hhqs_data/face_db/faces/xxx.jpg
 #   id=yyy name=李四  title=       scene=office map=B座3F  emb=NO   templates=0 img=(none)
 ```
 
@@ -434,13 +434,13 @@ $APP list
 
 ## 10. 共享数据库（Web / ROS / standalone 三向互通）
 
-三方使用**同一套 schema**，且默认都指向 `/tmp/face_db/faces.db`：
+三方使用**同一套 schema**，且默认都指向 `/data/hhqs_data/face_db/faces.db`：
 
 | 通路 | 默认 DB 路径 | 指定方式 |
 |---|---|---|
-| `face_recognition_standalone` | `/tmp/face_db/faces.db` | `--db` |
+| `face_recognition_standalone` | `/data/hhqs_data/face_db/faces.db` | `--db` |
 | `face_db_web` | — | `--db` 显式传入 |
-| ROS2 节点 | `/tmp/face_db/faces.db` | parameter `db_path` |
+| ROS2 节点 | `/data/hhqs_data/face_db/faces.db` | parameter `db_path` |
 
 只要三方使用同一个 `--db`，在一处录入 / 删除，另两处**立刻可见**。
 

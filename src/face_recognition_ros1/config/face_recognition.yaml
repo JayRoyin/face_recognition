@@ -1,11 +1,25 @@
-/**\n * Face Recognition Node configuration\n *
- * image_topic: Input image topic\n * result_topic: Output face recognition results topic\n * confidence_threshold: Recognition similarity threshold (0.0 - 1.0)\n * db_path: SQLite database file path\n * faces_dir: Directory to store face images\n * detection_model: Path to YOLO face detection ONNX model\n * recognition_model: Path to ArcFace recognition ONNX model\n */
+# -----------------------------------------------------------------------------
+# face_recognition_ros1 — parameter defaults / reference.
+#
+# ROS1 syntax note: ROS1 has NO `ros__parameters` level (that is ROS2). The
+# parameters live directly under the node name, which is what makes this file
+# loadable as-is:
+#
+#     rosparam load "$(rospack find face_recognition_ros1)/config/face_recognition.yaml"
+#
+# The launch file (launch/face_recognition.launch) is the AUTHORITATIVE source:
+# it passes every parameter to the node as a <param> element, and those always
+# win over anything loaded from a YAML. Use this file when starting the node
+# directly (e.g. `rosrun face_recognition_ros1 face_recognition_node`) and you
+# want the same defaults. Keep the two in sync.
+# -----------------------------------------------------------------------------
 face_recognition_node:
-  ros__parameters:
-    image_topic: "/image_raw"
-    result_topic: "/face/recognition_result"
-    confidence_threshold: 0.5
-    db_path: "/tmp/face_db/faces.db"
-    faces_dir: "/tmp/face_db/faces"
-    detection_model: "/models/det_10g.onnx"
-    recognition_model: "/models/w600k_r50.onnx"
+  image_topic: "/image_raw"
+  result_topic: "/face/recognition_result"
+  confidence_threshold: 0.5
+  db_path: "/data/hhqs_data/face_db/faces.db"
+  faces_dir: "/data/hhqs_data/face_db/faces"
+  # Relative to the working directory, matching node.cpp's own defaults. The
+  # launch file resolves these to absolute paths under <repo>/models.
+  detection_model: "models/det_10g.onnx"
+  recognition_model: "models/w600k_r50.onnx"

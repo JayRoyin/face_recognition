@@ -178,7 +178,15 @@ download_models() {
     log_info "Downloading face recognition models"
     log_info "=========================================="
 
-    export all_proxy="${all_proxy:-http://127.0.0.1:7890}"
+    # Do NOT invent a proxy here. This used to default all_proxy to
+    # http://127.0.0.1:7890, so on any machine that does not happen to run a
+    # proxy on that port every download timed out, and the only visible symptom
+    # was "download failed" — a developer-local preference baked into the build.
+    if [ -n "${all_proxy:-}${ALL_PROXY:-}" ]; then
+        log_info "Using proxy from environment: ${all_proxy:-$ALL_PROXY}"
+    else
+        log_info "No proxy set (use all_proxy=http://host:port if this host needs one)"
+    fi
 
     local models_dir="$PROJECT_ROOT/models"
     mkdir -p "$models_dir"
@@ -837,12 +845,15 @@ print_artifacts() {
 }
 
 main() {
+    # Truncate FIRST. The header used to be written with `tee -a` and then
+    # immediately erased by the `> "$BUILD_LOG"` on the next line, so build.log
+    # never contained the script name or the start time.
+    : > "$BUILD_LOG"
+
     echo "========================================" | tee -a "$BUILD_LOG"
     echo "Face Recognition Node Build Script" | tee -a "$BUILD_LOG"
     echo "Start time: $(date)" | tee -a "$BUILD_LOG"
     echo "========================================" | tee -a "$BUILD_LOG"
-
-    > "$BUILD_LOG"
 
     local build_target="${1:-ALL}"
     local build_success=true

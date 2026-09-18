@@ -20,8 +20,8 @@ FaceRecognitionNode::FaceRecognitionNode()
     // detector confidence and the recognition threshold, and 0.7 sits inside the
     // "genuine" cluster: it silently rejects a large share of correct matches.
     this->declare_parameter("confidence_threshold", 0.5f);
-    this->declare_parameter("db_path", "/tmp/face_db/faces.db");
-    this->declare_parameter("faces_dir", "/tmp/face_db/faces");
+    this->declare_parameter("db_path", "/data/hhqs_data/face_db/faces.db");
+    this->declare_parameter("faces_dir", "/data/hhqs_data/face_db/faces");
     this->declare_parameter("detection_model", "models/det_10g.onnx");
     this->declare_parameter("recognition_model", "models/w600k_r50.onnx");
 
@@ -43,6 +43,7 @@ FaceRecognitionNode::FaceRecognitionNode()
         RCLCPP_ERROR(this->get_logger(), "Failed to initialize detector: %s",
                     detector_->getLastError().c_str());
     } else {
+        detector_ready_ = true;
         RCLCPP_INFO(this->get_logger(), "Face detector initialized");
     }
 
@@ -51,12 +52,21 @@ FaceRecognitionNode::FaceRecognitionNode()
         RCLCPP_ERROR(this->get_logger(), "Failed to initialize recognizer: %s",
                     recognizer_->getLastError().c_str());
     } else {
+        recognizer_ready_ = true;
         RCLCPP_INFO(this->get_logger(), "Face recognizer initialized");
     }
 
     database_ = std::make_unique<face_recognition::FaceDatabase>();
     if (!database_->initialize(db_path_, faces_dir_)) {
-        RCLCPP_ERROR(this->get_logger(), "Failed to initialize database");
+        // Fail fast. FaceDatabase::initialize() leaves its sqlite handle null on
+        // failure, and every service call would then run against that null
+        // handle — at best reporting a bogus "no face detected" / "failed" for
+        // what is really an infrastructure problem, at worst undefined
+        // behaviour. Dying with a clear message is strictly better.
+        RCLCPP_FATAL(this->get_logger(),
+                     "Cannot open face database at '%s' (faces_dir '%s')",
+                     db_path_.c_str(), faces_dir_.c_str());
+        throw std::runtime_error("face_recognition_ros2: database init failed");
     } else {
         for (const auto& face : database_->list_faces()) {
             if (!detector_ || !recognizer_) break;
@@ -87,8 +97,10 @@ FaceRecognitionNode::FaceRecognitionNode()
 
         // Guard against a gallery built by a different recipe (see
         // feature_space.hpp). Silent here would mean every match is meaningless.
-        const std::string current_fs =
-            face_recognition::feature_space_id(recognition_model_path_);
+        const std::string current_fs = face_recognition::feature_space_id(
+            recognition_model_path_,
+            recognizer_ ? recognizer_->alignmentEnabled() : true,
+            /*allow_unaligned=*/false);
         std::string stored_fs;
         const auto status = face_recognition::check_feature_space(
             *database_, current_fs, &stored_fs);
@@ -104,8 +116,12 @@ FaceRecognitionNode::FaceRecognitionNode()
         }
     }
 
+    // SensorDataQoS (BEST_EFFORT), which is what camera drivers publish and what
+    // face_stream_server already uses. The default subscription QoS is RELIABLE,
+    // and a RELIABLE subscriber is INCOMPATIBLE with a BEST_EFFORT publisher: the
+    // node then receives no image at all, silently, with no error anywhere.
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-        image_topic, 10,
+        image_topic, rclcpp::SensorDataQoS(),
         std::bind(&FaceRecognitionNode::imageCallback, this, std::placeholders::_1));
 
     result_pub_ = this->create_publisher<face_recognition_ros2_interfaces::msg::FaceResult>(result_topic, 10);
@@ -166,11 +182,22 @@ void FaceRecognitionNode::imageCallback(const sensor_msgs::msg::Image::ConstShar
             return;
         }
 
-        auto detections = detector_->detect(image, 10);
-        if (detections.empty()) {
+        if (!detector_ready_ || !recognizer_ready_) {
+            RCLCPP_ERROR_THROTTLE(this->get_logger(), *this, 5000,
+                "models not loaded (detector: %s | recognizer: %s) -- publishing no faces",
+                detector_->getLastError().c_str(), recognizer_->getLastError().c_str());
+            face_recognition_ros2_interfaces::msg::FaceResult empty_msg;
+            empty_msg.header = msg->header;
+            result_pub_->publish(empty_msg);
             return;
         }
 
+        auto detections = detector_->detect(image, 10);
+
+        // ALWAYS publish, including with zero faces. The viewer resets its
+        // overlay on every message it receives, so staying silent when a face
+        // leaves the frame (or nothing matches) leaves the previous boxes and
+        // names painted on the annotated stream forever.
         face_recognition_ros2_interfaces::msg::FaceResult result_msg;
         result_msg.header = msg->header;
 
@@ -194,6 +221,10 @@ void FaceRecognitionNode::imageCallback(const sensor_msgs::msg::Image::ConstShar
             face.confidence = face_recognition::compute_similarity(embedding, match->embedding);
             face.scene = match->scene;
             face.map_location = match->map_location;
+            // Detection instant, taken from the image header. ROS1 fills this,
+            // ROS2 used to leave it at 0 — the same client then saw a real time
+            // on ROS1 and 1970 on ROS2.
+            face.timestamp = msg->header.stamp;
             face.x = det.bbox.x;
             face.y = det.bbox.y;
             face.width = det.bbox.width;
@@ -202,9 +233,7 @@ void FaceRecognitionNode::imageCallback(const sensor_msgs::msg::Image::ConstShar
             result_msg.faces.push_back(face);
         }
 
-        if (!result_msg.faces.empty()) {
-            result_pub_->publish(result_msg);
-        }
+        result_pub_->publish(result_msg);
 
     } catch (const cv_bridge::Exception& e) {
         RCLCPP_ERROR(this->get_logger(), "CV Bridge error: %s", e.what());
@@ -247,6 +276,16 @@ std::vector<uint8_t> FaceRecognitionNode::base64Decode(const std::string& encode
 
 void FaceRecognitionNode::addFaceCallback(const std::shared_ptr<face_recognition_ros2_interfaces::srv::AddFace::Request> req,
                                         const std::shared_ptr<face_recognition_ros2_interfaces::srv::AddFace::Response> res) {
+    // With an image but no model, the record would be stored with an EMPTY
+    // embedding: it can never be matched, yet the caller is told "Face added
+    // successfully". A metadata-only Add (no image) stays allowed.
+    if (!req->image_data.empty() && (!detector_ready_ || !recognizer_ready_)) {
+        res->success = false;
+        res->message = "models not loaded: " + detector_->getLastError() + " | " +
+                       recognizer_->getLastError();
+        return;
+    }
+
     std::vector<uint8_t> image_data;
 
     if (!req->image_data.empty()) {
@@ -327,6 +366,15 @@ void FaceRecognitionNode::clearFacesCallback(const std::shared_ptr<face_recognit
 void FaceRecognitionNode::addTemplateCallback(
         const std::shared_ptr<face_recognition_ros2_interfaces::srv::AddTemplate::Request> req,
         const std::shared_ptr<face_recognition_ros2_interfaces::srv::AddTemplate::Response> res) {
+    // A template must come from a model; without one the old code reported
+    // "no face detected" instead of "the model is not loaded".
+    if (!detector_ready_ || !recognizer_ready_) {
+        res->success = false;
+        res->message = "models not loaded: " + detector_->getLastError() + " | " +
+                       recognizer_->getLastError();
+        return;
+    }
+
     if (req->id.empty()) {
         res->success = false;
         res->message = "id is required";
@@ -391,6 +439,15 @@ void FaceRecognitionNode::verifyCallback(
         const std::shared_ptr<face_recognition_ros2_interfaces::srv::Verify::Response> res) {
     res->success = false;
     res->matched = false;
+
+    if (!detector_ready_ || !recognizer_ready_) {
+        // Distinguishing this from a genuine miss is the point of the service:
+        // reporting NO_FACE here would blame the face for a broken model.
+        res->decision = "ERROR";
+        res->message = "models not loaded: " + detector_->getLastError() + " | " +
+                       recognizer_->getLastError();
+        return;
+    }
 
     if (req->image_data.empty()) {
         res->decision = "ERROR";

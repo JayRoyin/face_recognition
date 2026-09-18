@@ -77,8 +77,8 @@ bool RecognitionPipeline::initialize(const PipelineConfig& cfg, std::string& err
     // normalisation / model silently degrades every comparison and is
     // indistinguishable from a broken model. See feature_space.hpp.
     {
-        const std::string current_fs =
-            face_recognition::feature_space_id(cfg_.recognition_model);
+        const std::string current_fs = face_recognition::feature_space_id(
+            cfg_.recognition_model, cfg_.align, cfg_.allow_unaligned);
         std::string stored_fs;
         const auto status = face_recognition::check_feature_space(
             *database_, current_fs, &stored_fs);
@@ -126,7 +126,9 @@ bool RecognitionPipeline::initialize(const PipelineConfig& cfg, std::string& err
 bool RecognitionPipeline::detect_largest(const cv::Mat& image,
                                          face_recognition::FaceDetection& out,
                                          std::string& err) {
-    auto detections = detector_->detect(image, 10);
+    // Honour --max-faces: detect_largest is used by enrolment / verify, and a
+    // hard-coded 10 made those paths ignore the operator's setting.
+    auto detections = detector_->detect(image, cfg_.max_faces);
     if (detections.empty()) {
         err = "no face detected";
         return false;
@@ -362,9 +364,15 @@ std::string RecognitionPipeline::add_template_from_image(const std::string& face
     const int n = database_->template_count(face_id);
     char fname[512];
     std::snprintf(fname, sizeof(fname), "%s_t%d", face_id.c_str(), n + 1);
-    if (database_->save_image(fname, image_data, stored_path)) {
-        // save_image appends ".jpg" to the id we passed.
+    if (!database_->save_image(fname, image_data, stored_path)) {
+        // save_image() fills stored_path BEFORE it writes, so a failed write
+        // still leaves a non-empty path. Storing it would put a template in the
+        // database that points at a file which does not exist — and
+        // `backfill --all` could then never rebuild that shot.
+        if (err) *err = "Failed to store the template image";
+        return {};
     }
+    // save_image appends ".jpg" to the name we passed.
 
     if (!database_->add_template(face_id, embedding, stored_path)) {
         if (err) *err = "Failed to insert template";
@@ -459,41 +467,57 @@ int RecognitionPipeline::backfill_embeddings(int* total, int* skipped, int* fail
         auto tpls = database_->list_templates(face.id);
         if (tpls.empty()) continue;
 
-        std::vector<std::string> tpl_images;
+        // Re-extract BEFORE deleting anything. remove_templates() also deletes
+        // the template image files (delete_files == true), so the old code —
+        // which collected the paths, called remove_templates(), and only then
+        // tried to imread() them — found every file already gone, dropped all of
+        // them, and silently destroyed the whole multi-template set. Exactly the
+        // opposite of what a rebuild is for.
+        std::vector<std::pair<std::string, std::vector<float>>> rebuilt_tpls;
         for (const auto& t : tpls) {
-            if (!t.image_path.empty()) tpl_images.push_back(t.image_path);
-        }
-        database_->remove_templates(face.id);
+            if (t.image_path.empty()) continue;
 
-        int rebuilt = 0;
-        for (const auto& path : tpl_images) {
-            cv::Mat img = cv::imread(path, cv::IMREAD_COLOR);
+            cv::Mat img = cv::imread(t.image_path, cv::IMREAD_COLOR);
             if (img.empty()) {
                 std::fprintf(stderr, "[backfill] template image unreadable: %s\n",
-                             path.c_str());
+                             t.image_path.c_str());
                 continue;
             }
             face_recognition::FaceDetection det;
             std::string derr;
             if (!detect_largest(img, det, derr)) {
-                std::fprintf(stderr, "[backfill] template %s : %s\n", path.c_str(),
-                             derr.c_str());
+                std::fprintf(stderr, "[backfill] template %s : %s\n",
+                             t.image_path.c_str(), derr.c_str());
                 continue;
             }
             std::vector<float> emb;
             std::string qerr;
             if (!prepare_embedding(img, det, emb, qerr)) {
-                std::fprintf(stderr, "[backfill] template %s : %s\n", path.c_str(),
-                             qerr.c_str());
+                std::fprintf(stderr, "[backfill] template %s : %s\n",
+                             t.image_path.c_str(), qerr.c_str());
                 continue;
             }
-            if (!database_->add_template(face.id, emb, path)) continue;
-            ++rebuilt;
+            rebuilt_tpls.emplace_back(t.image_path, std::move(emb));
         }
-        if (!tpl_images.empty()) {
-            std::printf("[backfill] id=%s name=%s : rebuilt %d/%zu extra template(s)\n",
-                        face.id.c_str(), face.name.c_str(), rebuilt, tpl_images.size());
+
+        // If not a single template could be rebuilt, KEEP the stored ones: the
+        // old ones are still comparable when the recipe did not change, and
+        // dropping them would lose multi-template data for nothing.
+        if (rebuilt_tpls.empty()) {
+            std::fprintf(stderr,
+                         "[backfill] id=%s name=%s : no extra template could be "
+                         "rebuilt, keeping the %zu stored one(s)\n",
+                         face.id.c_str(), face.name.c_str(), tpls.size());
+            continue;
         }
+
+        database_->remove_templates(face.id);
+        int rebuilt = 0;
+        for (const auto& item : rebuilt_tpls) {
+            if (database_->add_template(face.id, item.second, item.first)) ++rebuilt;
+        }
+        std::printf("[backfill] id=%s name=%s : rebuilt %d/%zu extra template(s)\n",
+                    face.id.c_str(), face.name.c_str(), rebuilt, tpls.size());
     }
 
     if (total)   *total   = n_total;

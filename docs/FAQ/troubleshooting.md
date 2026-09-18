@@ -179,8 +179,8 @@ ldd install/ros2/face_recognition_ros2/lib/face_recognition_ros2/face_recognitio
 **处理**
 
 ```bash
-mkdir -p /tmp/face_db/faces
-chmod -R u+rwX /tmp/face_db
+mkdir -p /data/hhqs_data/face_db/faces
+chmod -R u+rwX /data/hhqs_data/face_db
 ```
 
 ### Q8 ROS2 节点启动后无人脸检出
@@ -220,7 +220,7 @@ ros2 node list | grep face      # ③ 节点是否存活
 ```bash
 # 用 standalone 直接查看同一个库
 ./install/bin/face_recognition_app \
-    --db /tmp/face_db/faces.db list
+    --db /data/hhqs_data/face_db/faces.db list
 ```
 
 确保三方（Web / ROS / standalone）使用**同一个** `--db`。
@@ -510,7 +510,7 @@ $APP backfill --all
 **现象**
 
 ```bash
-./install/bin/face_db_web --port 8080 --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces
+./install/bin/face_db_web --port 8080 --db /data/hhqs_data/face_db/faces.db --faces-dir /data/hhqs_data/face_db/faces
 # ...
 # Embedding extraction: DISABLED (records will be stored with NULL embedding)
 ```
@@ -525,7 +525,7 @@ Web 页面里能看到记录、也能看到缩略图，但 `run` / ROS 节点**�
 **确认**
 
 ```bash
-sqlite3 /tmp/face_db/faces.db \
+sqlite3 /data/hhqs_data/face_db/faces.db \
   "SELECT name, title, length(embedding) AS emb_bytes FROM faces;"
 # emb_bytes 为空 ⇒ 就是这个问题
 ```
@@ -552,7 +552,7 @@ sqlite3 /tmp/face_db/faces.db \
 
    ```bash
    ./install/bin/face_db_web --port 8080 \
-       --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces \
+       --db /data/hhqs_data/face_db/faces.db --faces-dir /data/hhqs_data/face_db/faces \
        --detection-model "$(pwd)/models/det_10g.onnx" \
        --recognition-model "$(pwd)/models/w600k_r50.onnx"
    ```
@@ -561,7 +561,7 @@ sqlite3 /tmp/face_db/faces.db \
    确实需要"只存文字信息"时才用 `--allow-no-embedding`。
 
 > **另外一个常见陷阱**：仓库里还有一个 `data/faces.db`（空的）。三个模块的默认库都是
-> `/tmp/face_db/faces.db`，只有显式传 `--db data/faces.db` 才会用到它。如果两处混用，
+> `/data/hhqs_data/face_db/faces.db`，只有显式传 `--db data/faces.db` 才会用到它。如果两处混用，
 > 表现就是"我录入的人脸查不到了"。用 `find / -name faces.db` 确认只有一个在用。
 
 ### Q22 戴上眼镜能识别、摘掉就认不出；而别人戴着眼镜却被认成我

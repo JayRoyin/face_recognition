@@ -36,8 +36,12 @@ inline const char* kFeatureSpaceKey = "feature_space_id";
  * any model swap changes at least one of the two.
  *
  * @param recognition_model_path path to the ArcFace ONNX model (may be empty)
+ * @param aligned         whether the recogniser uses landmark alignment
+ * @param allow_unaligned whether a bbox-crop fallback is accepted alongside it
  */
-inline std::string feature_space_id(const std::string& recognition_model_path) {
+inline std::string feature_space_id(const std::string& recognition_model_path,
+                                    bool aligned = true,
+                                    bool allow_unaligned = false) {
     long long size  = 0;
     long long mtime = 0;
     struct stat st;
@@ -47,16 +51,26 @@ inline std::string feature_space_id(const std::string& recognition_model_path) {
         mtime = static_cast<long long>(st.st_mtime);
     }
 
+    // Front-end tag. The two front-ends are NOT interchangeable, so the front
+    // end has to be part of the fingerprint: otherwise `--no-align` would query
+    // an aligned gallery through the bbox crop and the guard would still report
+    // OK — silently producing the "owner scores low, stranger scores high"
+    // failure it exists to catch.
+    const char* front =
+        aligned ? (allow_unaligned ? "arcface112-align-or-bbox" : "arcface112-align")
+                : "bboxcrop";
+
     // Recipe constants. Keep them in sync with the code they describe:
-    //   det      face_detector.cpp  SCRFD decoding, plain stride scaling
-    //   front    face_recognizer.cpp align_crop() -> ArcFace 112x112 template
-    //   norm     RGB, (x - 127.5) / 127.5, then L2
+    //   det      face_detector.cpp    SCRFD decoding, plain stride scaling
+    //   front    face_recognizer.cpp  align_crop() -> ArcFace 112x112 template
+    //   norm     face_recognizer.cpp  blobFromImage(1/255, mean 0, swapRB=true)
+    //                                 i.e. BGR -> RGB, scaled to [0,1], then L2
     //   model    w600k_r50.onnx (or whatever --recognition-model points at)
     char buf[256];
     std::snprintf(buf, sizeof(buf),
-                  "fs1|det=scrfd-stride|front=arcface112-align"
-                  "|norm=rgb-pm127.5|model=%lld:%lld",
-                  size, mtime);
+                  "fs1|det=scrfd-stride|front=%s"
+                  "|norm=rgb-1div255|model=%lld:%lld",
+                  front, size, mtime);
     return std::string(buf);
 }
 

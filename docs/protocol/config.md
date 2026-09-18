@@ -22,8 +22,8 @@
 |---|---|---|
 | 检测模型 | `models/det_10g.onnx` | RetinaFace |
 | 识别模型 | `models/w600k_r50.onnx` | ArcFace，512 维 |
-| SQLite 数据库 | `/tmp/face_db/faces.db` | ROS / standalone / web 共享 |
-| 缩略图目录 | `/tmp/face_db/faces` | 文件名 = `<id>.jpg` |
+| SQLite 数据库 | `/data/hhqs_data/face_db/faces.db` | ROS / standalone / web 共享 |
+| 缩略图目录 | `/data/hhqs_data/face_db/faces` | 文件名 = `<id>.jpg` |
 | 构建日志 | `build.log`（项目根） | 所有 build.sh 输出 |
 
 > standalone 的所有路径**相对于当前工作目录**，其余模块建议使用绝对路径。
@@ -43,8 +43,8 @@
     confidence_threshold: 0.5
     nms_threshold: 0.5
 
-    db_path: "/tmp/face_db/faces.db"
-    faces_dir: "/tmp/face_db/faces"
+    db_path: "/data/hhqs_data/face_db/faces.db"
+    faces_dir: "/data/hhqs_data/face_db/faces"
 
     detection_model: "/models/det_10g.onnx"
     recognition_model: "/models/w600k_r50.onnx"
@@ -67,8 +67,8 @@ ros2 launch face_recognition_ros2 face_recognition.launch.py \
 | `image_topic` | string | `/image_raw` | 输入图像话题 |
 | `result_topic` | string | `/face/recognition_result` | 结果话题 |
 | `confidence_threshold` | float | `0.5` | 识别相似度阈值（同时传给检测器） |
-| `db_path` | string | `/tmp/face_db/faces.db` | 数据库路径 |
-| `faces_dir` | string | `/tmp/face_db/faces` | 缩略图目录 |
+| `db_path` | string | `/data/hhqs_data/face_db/faces.db` | 数据库路径 |
+| `faces_dir` | string | `/data/hhqs_data/face_db/faces` | 缩略图目录 |
 | `detection_model` | string | `models/det_10g.onnx` | 检测模型 |
 | `recognition_model` | string | `models/w600k_r50.onnx` | 识别模型 |
 
@@ -99,8 +99,8 @@ face_recognition_node:
     image_topic: "/image_raw"
     result_topic: "/face/recognition_result"
     confidence_threshold: 0.5
-    db_path: "/tmp/face_db/faces.db"
-    faces_dir: "/tmp/face_db/faces"
+    db_path: "/data/hhqs_data/face_db/faces.db"
+    faces_dir: "/data/hhqs_data/face_db/faces"
     detection_model: "/models/det_10g.onnx"
     recognition_model: "/models/w600k_r50.onnx"
 ```
@@ -118,8 +118,8 @@ Launch 参数与节点参数同名，直接通过 `<arg>` / `<param>` 传递，�
 |---|---|
 | `--detection-model` | `models/det_10g.onnx` |
 | `--recognition-model` | `models/w600k_r50.onnx` |
-| `--db` | `/tmp/face_db/faces.db` |
-| `--faces-dir` | `/tmp/face_db/faces` |
+| `--db` | `/data/hhqs_data/face_db/faces.db` |
+| `--faces-dir` | `/data/hhqs_data/face_db/faces` |
 | `--detection-threshold` | `0.5` |
 | `--recognition-threshold` | `0.5`（取值依据见 [face_recognizer.md §阈值取值](../services/face_recognizer.md#阈值取值)） |
 | `--nms-threshold` | `0.5` |

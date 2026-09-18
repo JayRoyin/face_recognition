@@ -51,10 +51,17 @@ add_executable(face_recognition_node
   src/node.cpp
 )
 
+# `${catkin_EXPORTED_TARGETS}` already pulls in the interface package's message
+# generation targets.
+#
+# NOTE: this list used to name
+# `face_recognition_ros1_interfaces_generate_message_cpp` — singular "message",
+# which is not a target catkin ever creates (it is `<pkg>_generate_messages_cpp`,
+# with `messages` plural). CMake fails at generate time with "The dependency
+# target ... does not exist", so this package could not be configured at all.
 add_dependencies(face_recognition_node
   ${${PROJECT_NAME}_EXPORTED_TARGETS}
   ${catkin_EXPORTED_TARGETS}
-  face_recognition_ros1_interfaces_generate_message_cpp
 )
 
 target_link_libraries(face_recognition_node

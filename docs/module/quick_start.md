@@ -16,7 +16,7 @@
 | Web 人脸库后台 | `./build.sh WEB` | `face_db_web` | ✗ | [web.md](web.md) |
 
 > 所有模块共用同一份模型权重、同一套 SQLite schema、同一个默认数据库路径
-> `/tmp/face_db/faces.db`，因此**跨模块互通**（Web 录入 → ROS/standalone 立即识别）。
+> `/data/hhqs_data/face_db/faces.db`，因此**跨模块互通**（Web 录入 → ROS/standalone 立即识别）。
 
 ---
 
@@ -29,7 +29,7 @@ cd ~/Royin_Project/face_recognition
 ./build.sh MODELS
 
 # 准备人脸库目录（所有模块的默认路径）
-mkdir -p /tmp/face_db/faces
+mkdir -p /data/hhqs_data/face_db/faces
 ```
 
 模型清单：
@@ -56,7 +56,7 @@ mkdir -p /tmp/face_db/faces
 ```cpp
 FaceDetector   detector;   detector.initialize("models/det_10g.onnx", 0.5f, 0.5f, 640);
 FaceRecognizer recognizer; recognizer.initialize("models/w600k_r50.onnx");
-FaceDatabase   database;   database.initialize("/tmp/face_db/faces.db", "/tmp/face_db/faces");
+FaceDatabase   database;   database.initialize("/data/hhqs_data/face_db/faces.db", "/data/hhqs_data/face_db/faces");
 ```
 
 详见 [core.md](core.md) 与 [../services/](../services/)。
@@ -126,8 +126,8 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 
 ./install/bin/face_db_web \
     --port 8080 \
-    --db /tmp/face_db/faces.db \
-    --faces-dir /tmp/face_db/faces \
+    --db /data/hhqs_data/face_db/faces.db \
+    --faces-dir /data/hhqs_data/face_db/faces \
     --detection-model "$(pwd)/models/det_10g.onnx" \
     --recognition-model "$(pwd)/models/w600k_r50.onnx"
 ```
@@ -141,7 +141,7 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 
 ```
 ① Web 后台批量录入  ──────────┐
-                              ├─► 同一份 SQLite（/tmp/face_db/faces.db）
+                              ├─► 同一份 SQLite（/data/hhqs_data/face_db/faces.db）
 ② standalone CLI 批量入库 ────┘
                               │
                               ▼

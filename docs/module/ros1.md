@@ -57,8 +57,8 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 | `image_topic` | `/image_raw` | 输入图像话题 |
 | `result_topic` | `/face/recognition_result` | 识别结果话题 |
 | `confidence_threshold` | `0.5` | 识别相似度阈值 |
-| `db_path` | `/tmp/face_db/faces.db` | SQLite 数据库路径 |
-| `faces_dir` | `/tmp/face_db/faces` | 缩略图目录 |
+| `db_path` | `/data/hhqs_data/face_db/faces.db` | SQLite 数据库路径 |
+| `faces_dir` | `/data/hhqs_data/face_db/faces` | 缩略图目录 |
 | `detection_model` | `/models/det_10g.onnx` | 检测模型 |
 | `recognition_model` | `/models/w600k_r50.onnx` | 识别模型 |
 
@@ -78,8 +78,8 @@ face_recognition_node:
     image_topic: "/image_raw"
     result_topic: "/face/recognition_result"
     confidence_threshold: 0.5
-    db_path: "/tmp/face_db/faces.db"
-    faces_dir: "/tmp/face_db/faces"
+    db_path: "/data/hhqs_data/face_db/faces.db"
+    faces_dir: "/data/hhqs_data/face_db/faces"
     detection_model: "/models/det_10g.onnx"
     recognition_model: "/models/w600k_r50.onnx"
 ```

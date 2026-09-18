@@ -156,7 +156,7 @@ cd ~/Royin_Project/face_recognition
 
 `./build.sh TEST` 运行 `tests/regression.sh`：只调用**非 ROS** 的
 `face_recognition_app`，因此不需要任何 ROS 环境；每个用例都在自己的临时目录里创建
-独立的人脸库，**不会读写你正在使用的 `/tmp/face_db`**。它断言的不变量是：
+独立的人脸库，**不会读写你正在使用的 `/data/hhqs_data/face_db`**。它断言的不变量是：
 
 | 用例 | 断言 | 曾能捕获的问题 |
 |---|---|---|

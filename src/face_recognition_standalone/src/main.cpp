@@ -59,8 +59,8 @@ PipelineConfig build_pipeline_config(const CliArgs& args) {
     // Defaults match the convention used by the ROS2 node and the Web UI so
     // that web-uploaded faces are immediately visible to the standalone app
     // (and vice versa) without any extra configuration.
-    cfg.db_path   = get_opt(args, "--db",      "/tmp/face_db/faces.db");
-    cfg.faces_dir = get_opt(args, "--faces-dir", "/tmp/face_db/faces");
+    cfg.db_path   = get_opt(args, "--db",      "/data/hhqs_data/face_db/faces.db");
+    cfg.faces_dir = get_opt(args, "--faces-dir", "/data/hhqs_data/face_db/faces");
 
     if (auto v = get_opt(args, "--detection-threshold", "");   !v.empty()) cfg.detection_threshold   = std::stof(v);
     if (auto v = get_opt(args, "--recognition-threshold", ""); !v.empty()) cfg.recognition_threshold = std::stof(v);
@@ -206,9 +206,12 @@ int cmd_run(const CliArgs& args) {
         source_uri = camera_uri;
     }
     if (source_uri.empty()) source_uri = "0";
-    if (source_uri.size() >= 2 && source_uri[0] == '/' &&
-        std::isdigit(static_cast<unsigned char>(source_uri.back()))) {
-        source_uri.pop_back();  // strip trailing slash (e.g. /dev/video0/)
+    if (source_uri.size() >= 2 && source_uri.back() == '/') {
+        // Strip ONE trailing slash so "/dev/video0/" and "/dev/video0" resolve to
+        // the same device. The previous condition additionally required the last
+        // character to be a digit — false for exactly the example it documented —
+        // so the slash was never removed and the device failed to open.
+        source_uri.pop_back();
     }
     src_cfg = face_recognition_standalone::infer_source_from_uri(source_uri);
     if (auto v = get_opt(args, "--width",  ""); !v.empty()) src_cfg.width  = std::stoi(v);

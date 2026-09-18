@@ -67,6 +67,13 @@ private:
     std::string faces_dir_;
     std::string detection_model_path_;
     std::string recognition_model_path_;
+
+    // A failed initialize() is NOT visible through the pointers: make_unique()
+    // never yields null, so `if (!detector_)` can never fire. Without these flags
+    // a missing model surfaces as the business answer "no face detected" instead
+    // of "the detector is not loaded".
+    bool detector_ready_ = false;
+    bool recognizer_ready_ = false;
 };
 
 }  // namespace face_recognition_ros2

@@ -57,7 +57,7 @@ curl -s http://localhost:8080/api/faces | python3 -m json.tool
       "title": "工程师",
       "scene": "office",
       "map_location": "5F-A区",
-      "image_path": "/tmp/face_db/faces/550e8400-....jpg"
+      "image_path": "/data/hhqs_data/face_db/faces/550e8400-....jpg"
     }
   ]
 }

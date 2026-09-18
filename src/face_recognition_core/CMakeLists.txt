@@ -146,9 +146,16 @@ set(SOURCES
 
 add_library(face_recognition_core SHARED ${SOURCES})
 
-target_include_directories(face_recognition_core PUBLIC
+# The public headers expose neither sqlite3.h nor onnxruntime_cxx_api.h — both
+# are hidden behind pImpl. Keeping those include dirs PRIVATE is what makes the
+# exported package relocatable: a PUBLIC entry would be written into the
+# installed INTERFACE_INCLUDE_DIRECTORIES as an absolute build-machine path, and
+# anyone copying install/ elsewhere would get a link failure pointing at it.
+target_include_directories(face_recognition_core
+    PUBLIC
     $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
     $<INSTALL_INTERFACE:include>
+    PRIVATE
     ${SQLITE3_INCLUDE_DIRS}
     ${ONNXRUNTIME_INCLUDE_DIR}
 )

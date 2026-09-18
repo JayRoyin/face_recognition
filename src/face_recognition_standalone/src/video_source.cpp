@@ -109,6 +109,8 @@ VideoSource::~VideoSource() { release(); }
 void VideoSource::release() {
     if (cap_.isOpened()) cap_.release();
     last_frame_.release();
+    dir_files_.clear();
+    dir_pos_ = 0;
 }
 
 bool VideoSource::open(const SourceConfig& cfg, std::string& err) {
@@ -153,8 +155,30 @@ bool VideoSource::open(const SourceConfig& cfg, std::string& err) {
         }
         case SourceType::FILE:
         case SourceType::IMAGE_DIR: {
-            // IMAGE_DIR is handled in read() — open a dummy capture to report
-            // width/height as 0 (we don't know it upfront).
+            // IMAGE_DIR needs no VideoCapture; read() replays a file list.
+            // Scan the directory ONCE here — see dir_files_.
+            if (cfg_.type == SourceType::IMAGE_DIR) {
+                namespace fs = std::filesystem;
+                std::error_code ec;
+                fs::directory_iterator it(cfg_.uri, ec);
+                if (!ec) {
+                    for (const auto& entry : it) {
+                        if (!entry.is_regular_file()) continue;
+                        std::string ext = entry.path().extension().string();
+                        std::transform(ext.begin(), ext.end(), ext.begin(),
+                                       [](unsigned char c) {
+                                           return std::tolower(c);
+                                       });
+                        if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" ||
+                            ext == ".bmp" || ext == ".webp" || ext == ".tiff" ||
+                            ext == ".tif") {
+                            dir_files_.push_back(entry.path().string());
+                        }
+                    }
+                }
+                std::sort(dir_files_.begin(), dir_files_.end());
+                dir_pos_ = 0;
+            }
             break;
         }
     }
@@ -260,26 +284,15 @@ bool VideoSource::read(cv::Mat& frame) {
     frame.release();
 
     if (cfg_.type == SourceType::IMAGE_DIR) {
-        namespace fs = std::filesystem;
-        std::vector<fs::path> files;
-        for (const auto& entry : fs::directory_iterator(cfg_.uri)) {
-            if (!entry.is_regular_file()) continue;
-            std::string ext = entry.path().extension().string();
-            std::transform(ext.begin(), ext.end(), ext.begin(),
-                           [](unsigned char c) { return std::tolower(c); });
-            if (ext == ".jpg" || ext == ".jpeg" || ext == ".png" || ext == ".bmp" ||
-                ext == ".webp" || ext == ".tiff" || ext == ".tif") {
-                files.push_back(entry.path());
-            }
-        }
-        std::sort(files.begin(), files.end());
-        for (const auto& p : files) {
-            cv::Mat img = cv::imread(p.string(), cv::IMREAD_COLOR);
-            if (!img.empty()) {
-                frame = img.clone();
-                last_frame_ = frame;
-                return true;
-            }
+        // Walk the list captured by open(). Pre-scanning is what makes a
+        // directory run terminate: re-scanning per call (the old behaviour)
+        // returned the first readable image forever.
+        while (dir_pos_ < dir_files_.size()) {
+            cv::Mat img = cv::imread(dir_files_[dir_pos_++], cv::IMREAD_COLOR);
+            if (img.empty()) continue;
+            frame = img;
+            last_frame_ = frame;
+            return true;
         }
         return false;
     }

@@ -17,8 +17,11 @@ FaceViewer::FaceViewer(const rclcpp::NodeOptions& options)
     this->get_parameter("result_topic",     result_topic_);
     this->get_parameter("annotated_topic",  annotated_topic_);
 
+    // SensorDataQoS (BEST_EFFORT), matching camera drivers and the other nodes.
+    // A RELIABLE subscriber cannot receive from a BEST_EFFORT publisher, and the
+    // viewer would simply show nothing with no error.
     image_sub_ = this->create_subscription<sensor_msgs::msg::Image>(
-        image_topic_, 10,
+        image_topic_, rclcpp::SensorDataQoS(),
         std::bind(&FaceViewer::imageCallback, this, std::placeholders::_1));
 
     result_sub_ = this->create_subscription<face_recognition_ros2_interfaces::msg::FaceResult>(
@@ -53,6 +56,8 @@ void FaceViewer::resultCallback(
     for (const auto& face : msg->faces) {
         latest_faces_[face.id] = face;
     }
+    have_result_ = true;
+    last_result_time_ = std::chrono::steady_clock::now();
 }
 
 void FaceViewer::imageCallback(const sensor_msgs::msg::Image::ConstSharedPtr& msg) {
@@ -80,7 +85,11 @@ cv::Mat FaceViewer::drawAnnotations(const cv::Mat& frame) {
     std::map<std::string, face_recognition_ros2_interfaces::msg::FaceInfo> snapshot;
     {
         std::lock_guard<std::mutex> lock(results_mutex_);
-        snapshot = latest_faces_;
+        // Expire stale results (see kResultTtl): without this, a stopped
+        // recognition node left its last boxes on screen indefinitely.
+        const bool fresh = have_result_ &&
+            (std::chrono::steady_clock::now() - last_result_time_) < kResultTtl;
+        if (fresh) snapshot = latest_faces_;
     }
 
     for (const auto& [id, face] : snapshot) {

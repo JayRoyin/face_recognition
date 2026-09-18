@@ -5,7 +5,9 @@
 
 #include <opencv2/core.hpp>
 #include <opencv2/videoio.hpp>
+#include <cstddef>
 #include <string>
+#include <vector>
 
 namespace face_recognition_standalone {
 
@@ -90,6 +92,12 @@ private:
     cv::VideoCapture cap_;
     SourceConfig cfg_;
     cv::Mat last_frame_;
+
+    // IMAGE_DIR cursor. open() scans the directory ONCE into this list and
+    // read() walks it. Scanning inside read() (as this used to) always returned
+    // the first readable image again, so `run --source <dir>` never terminated.
+    std::vector<std::string> dir_files_;
+    std::size_t              dir_pos_ = 0;
 };
 
 const char* source_type_name(SourceType t);

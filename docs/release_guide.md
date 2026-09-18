@@ -96,7 +96,7 @@ curl -s http://localhost:8080/api/faces | python3 -m json.tool
 ### 3.3 数据校验
 
 ```bash
-sqlite3 /tmp/face_db/faces.db \
+sqlite3 /data/hhqs_data/face_db/faces.db \
   "SELECT COUNT(*) AS total,
           SUM(CASE WHEN embedding IS NULL THEN 1 ELSE 0 END) AS no_emb
    FROM faces;"

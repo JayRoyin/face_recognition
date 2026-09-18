@@ -11,6 +11,13 @@
   <build_depend>message_generation</build_depend>
   <exec_depend>message_runtime</exec_depend>
 
+  <!-- FaceResult.msg embeds std_msgs/Header and CMakeLists declares std_msgs in
+       find_package(catkin ...) + catkin_package(CATKIN_DEPENDS ...). Without it
+       here catkin reports the dependency/package.xml mismatch, and downstream
+       packages cannot get std_msgs transitively through this interface package. -->
+  <build_depend>std_msgs</build_depend>
+  <exec_depend>std_msgs</exec_depend>
+
   <export>
   </export>
 </package>

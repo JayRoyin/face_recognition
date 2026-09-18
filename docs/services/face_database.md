@@ -83,7 +83,7 @@ public:
 ## 2. initialize —— 初始化
 
 ```cpp
-database.initialize("/tmp/face_db/faces.db", "/tmp/face_db/faces");
+database.initialize("/data/hhqs_data/face_db/faces.db", "/data/hhqs_data/face_db/faces");
 ```
 
 执行动作：
@@ -211,9 +211,9 @@ Z-norm / T-norm 的同一思路。
 > ```bash
 > # 用任意人脸图片目录建一个冒充者库（只用于归一化，不参与识别）
 > APP=./install/bin/face_recognition_app
-> $APP add-bulk --dir ./other_faces --db /tmp/face_db/cohort.db
+> $APP add-bulk --dir ./other_faces --db /data/hhqs_data/face_db/cohort.db
 > # 之后运行识别时挂上它
-> $APP run --source 0 --cohort-db /tmp/face_db/cohort.db
+> $APP run --source 0 --cohort-db /data/hhqs_data/face_db/cohort.db
 > ```
 
 ### 4.4 find_matching_face —— 兼容封装
@@ -315,7 +315,7 @@ db_path (SQLite)
 #include "face_recognition_core/face_database.hpp"
 
 face_recognition::FaceDatabase db;
-db.initialize("/tmp/face_db/faces.db", "/tmp/face_db/faces");
+db.initialize("/data/hhqs_data/face_db/faces.db", "/data/hhqs_data/face_db/faces");
 
 // 新增（带缩略图）
 std::vector<uint8_t> jpeg = /* ... */;

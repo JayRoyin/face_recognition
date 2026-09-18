@@ -150,7 +150,14 @@ public:
     /** Only delete files we own (inside faces_dir). */
     void removeOwnedFile(const std::string& path) {
         if (path.empty() || faces_dir.empty()) return;
-        if (path.compare(0, faces_dir.size(), faces_dir) != 0) return;
+        // Require a path SEPARATOR after the prefix. A plain string prefix match
+        // also accepts a sibling directory ("/db/faces_backup/x.jpg" starts with
+        // "/db/faces"), and this function deletes what it accepts.
+        const bool inside =
+            (path.size() > faces_dir.size() &&
+             path.compare(0, faces_dir.size(), faces_dir) == 0 &&
+             (faces_dir.back() == '/' || path[faces_dir.size()] == '/'));
+        if (!inside) return;
         std::remove(path.c_str());
     }
 
@@ -363,6 +370,12 @@ bool FaceDatabase::initialize(const std::string& db_path, const std::string& fac
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     pImpl->faces_dir = faces_dir;
 
+    // Re-initialising the same object must not leak the previous connection.
+    if (pImpl->db) {
+        sqlite3_close(pImpl->db);
+        pImpl->db = nullptr;
+    }
+
     std::error_code ec;
     std::filesystem::create_directories(faces_dir, ec);
     if (ec) return false;
@@ -374,8 +387,28 @@ bool FaceDatabase::initialize(const std::string& db_path, const std::string& fac
 
     if (sqlite3_open(db_path.c_str(), &pImpl->db) != SQLITE_OK) {
         std::cerr << "Cannot open database: " << sqlite3_errmsg(pImpl->db) << std::endl;
+        // sqlite3_open allocates a handle even when it fails. Leaving it both
+        // leaks the connection (and its file lock) and keeps pImpl->db non-null,
+        // so later calls would run against a half-open database.
+        sqlite3_close(pImpl->db);
+        pImpl->db = nullptr;
         return false;
     }
+
+    // One database file is shared by several front-ends (CLI, web UI, ROS nodes).
+    // Without a busy timeout a concurrent writer fails immediately with
+    // SQLITE_BUSY, which the callers only see as an unexplained "add failed";
+    // WAL additionally lets readers proceed while a writer holds the lock.
+    sqlite3_busy_timeout(pImpl->db, 5000);
+    char* pragma_err = nullptr;
+    if (sqlite3_exec(pImpl->db, "PRAGMA journal_mode=WAL;", nullptr, nullptr,
+                     &pragma_err) != SQLITE_OK) {
+        // Non-fatal: some filesystems (network mounts) refuse WAL. The database
+        // still works, just with the default rollback journal.
+        std::cerr << "[FaceDatabase] PRAGMA journal_mode=WAL failed: "
+                  << (pragma_err ? pragma_err : "?") << std::endl;
+    }
+    sqlite3_free(pragma_err);
 
     return pImpl->createTable();
 }
@@ -409,6 +442,12 @@ std::string FaceDatabase::add_face(const std::string& name,
     if (pImpl->insertFace(record)) {
         return record.id;
     }
+
+    // The image is written before the row. If the insert failed (busy database,
+    // constraint, disk full) the file would stay behind with nothing referencing
+    // it — an orphan that no later cleanup path ever looks at, because it is only
+    // discoverable through the row that does not exist.
+    pImpl->removeOwnedFile(record.image_path);
     return "";
 }
 
@@ -657,9 +696,25 @@ bool FaceDatabase::update_embedding(const std::string& face_id,
                       SQLITE_TRANSIENT);
     sqlite3_bind_int64(stmt, 2, time(nullptr));
     sqlite3_bind_text(stmt, 3, face_id.c_str(), -1, SQLITE_TRANSIENT);
-    const bool ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(pImpl->db) == 1;
+    const bool executed = (sqlite3_step(stmt) == SQLITE_DONE);
+    const int  changed  = executed ? sqlite3_changes(pImpl->db) : 0;
+    const std::string dbmsg = sqlite3_errmsg(pImpl->db);
     sqlite3_finalize(stmt);
-    return ok;
+
+    if (!executed) {
+        std::cerr << "[FaceDatabase] update_embedding failed for id=" << face_id
+                  << ": " << dbmsg << std::endl;
+        return false;
+    }
+    if (changed == 0) {
+        // A successful statement that matched no row means the id does not exist.
+        // Reporting it as a plain failure made the caller's log ("failed to
+        // update embedding") indistinguishable from a real execution error.
+        std::cerr << "[FaceDatabase] update_embedding: no face with id=" << face_id
+                  << " (row not found)" << std::endl;
+        return false;
+    }
+    return true;
 }
 
 bool FaceDatabase::set_meta(const std::string& key, const std::string& value) {

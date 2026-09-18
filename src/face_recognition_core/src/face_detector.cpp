@@ -73,12 +73,20 @@ public:
                 output_names.push_back(name.get());
             }
 
-            // Detect backend by number of outputs
-            if (num_outputs == 9) {
-                backend_name = "retinaface";
-            } else {
-                backend_name = "yolov8";
-            }
+            // The backend is decided from the ACTUAL output tensors on the first
+            // inference — see detectFaces(). Not here, and not from the output
+            // count:
+            //   * Session::GetOutputTypeInfo(i).GetTensorTypeAndShapeInfo() is
+            //     unusable in this ONNX Runtime build: GetDimensionsCount()
+            //     returns a bogus value and GetShape() then throws
+            //     "cannot create std::vector larger than max_size()", which
+            //     takes down every command that loads the detector.
+            //     Ort::Value::GetTensorTypeAndShapeInfo() (used by the
+            //     post-processing and by the classifier below) is fine.
+            //   * "num_outputs == 9" on its own is not a signature: any 9-output
+            //     YOLO variant matches it and would then be decoded with the
+            //     SCRFD decoder, silently producing garbage boxes.
+            backend_name = "auto";
             model_loaded = true;
             return true;
         } catch (const Ort::Exception& e) {
@@ -265,6 +273,12 @@ public:
         const float* bboxes[3] = {nullptr, nullptr, nullptr};
         const float* landmarks[3] = {nullptr, nullptr, nullptr};
 
+        // Real anchor count of each bound tensor. `expected[l]` is derived from
+        // the configured input size, so the two only agree for the shipped
+        // model/input combination; indexing up to expected[l] anyway would read
+        // past the tensor whenever they disagree.
+        int actual_rows[3] = {0, 0, 0};
+
         // Match outputs by shape: `rows` identifies the layer, `cols` the kind
         // (1 = score, 4 = bbox offset, 10 = 5 landmarks).
         for (size_t i = 0; i < outputs.size() && i < 9; ++i) {
@@ -287,13 +301,17 @@ public:
                 else continue;
             }
 
-            if      (cols == 1)  scores[layer]    = data;
-            else if (cols == 4)  bboxes[layer]    = data;
-            else if (cols == 10) landmarks[layer] = data;
+            if      (cols == 1)  { scores[layer]    = data; actual_rows[layer] = rows; }
+            else if (cols == 4)  { bboxes[layer]    = data; actual_rows[layer] = rows; }
+            else if (cols == 10) { landmarks[layer] = data; actual_rows[layer] = rows; }
         }
 
         for (int layer = 0; layer < 3; ++layer) {
             if (!scores[layer] || !bboxes[layer] || !landmarks[layer]) continue;
+
+            // Bound every access by the smaller of "what the input size implies"
+            // and "what the tensor actually holds".
+            const int limit = std::min(expected[layer], actual_rows[layer]);
 
             int stride = strides[layer];
             int grid_w = input_width / stride;
@@ -303,7 +321,7 @@ public:
                 for (int gx = 0; gx < grid_w; ++gx) {
                     for (int anchor_type = 0; anchor_type < 2; ++anchor_type) {
                         int i = (gy * grid_w + gx) * 2 + anchor_type;
-                        if (i >= expected[layer]) continue;
+                        if (i >= limit) continue;
 
                         // score is already a softmax probability (in [0,1])
                         float conf = scores[layer][i];
@@ -486,6 +504,24 @@ public:
                 run_options,
                 input_name_cstrs.data(), &input_tensor, 1,
                 output_name_cstrs.data(), output_name_cstrs.size());
+
+            // Classify the backend from the real tensors the first time we see
+            // them: SCRFD / det_10g emits three groups of (1 = score, 4 = bbox,
+            // 10 = landmarks) tensors, which no YOLO export matches.
+            if (backend_name == "auto") {
+                int n_score = 0, n_bbox = 0, n_landmark = 0;
+                for (const auto& v : outputs) {
+                    const auto shape = v.GetTensorTypeAndShapeInfo().GetShape();
+                    if (shape.empty()) continue;
+                    const int64_t last = shape.back();
+                    if      (last == 1)  ++n_score;
+                    else if (last == 4)  ++n_bbox;
+                    else if (last == 10) ++n_landmark;
+                }
+                const bool scrfd = (n_score > 0 && n_bbox > 0 && n_landmark > 0 &&
+                                    n_score == n_bbox && n_bbox == n_landmark);
+                backend_name = scrfd ? "retinaface" : "yolov8";
+            }
 
             if (backend_name == "retinaface") {
                 return postprocessRetinaFace(outputs, image.cols, image.rows, lb, max_faces);

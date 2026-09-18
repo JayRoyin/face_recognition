@@ -10,6 +10,7 @@
 #include <cv_bridge/cv_bridge.h>
 #include <opencv2/core.hpp>
 
+#include <chrono>
 #include <map>
 #include <mutex>
 
@@ -44,6 +45,17 @@ private:
 
     std::mutex results_mutex_;
     std::map<std::string, face_recognition_ros2_interfaces::msg::FaceInfo> latest_faces_;
+
+    // Arrival time of the last recognition result, used to EXPIRE the overlay.
+    // The recognition node now publishes an empty result when nothing matches,
+    // but if it stops altogether (crash, camera unplugged, paused) no further
+    // messages arrive at all and the last known boxes would stay painted on the
+    // annotated stream forever.
+    bool have_result_ = false;
+    std::chrono::steady_clock::time_point last_result_time_{};
+
+    /** Results older than this are treated as absent. */
+    static constexpr std::chrono::milliseconds kResultTtl{2000};
 };
 
 }  // namespace face_recognition_ros2

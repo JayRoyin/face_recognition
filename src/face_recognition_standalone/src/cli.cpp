@@ -16,12 +16,17 @@ CliArgs parse_cli(int argc, char** argv) {
 
     out.command = argv[1];
 
-    auto need_value = [&](int i, const char* flag) -> std::string {
-        if (i + 1 >= argc) {
-            std::fprintf(stderr, "Missing value for %s\n", flag);
-            std::exit(2);
-        }
-        return argv[i + 1];
+    // Flags that REQUIRE a value (everything parsed with get_opt() downstream).
+    // Every other flag is a boolean switch, for which "no value" means "1".
+    static const char* kValueFlags[] = {
+        "--detection-model", "--recognition-model", "--db", "--faces-dir",
+        "--detection-threshold", "--recognition-threshold", "--nms-threshold",
+        "--input-size", "--max-faces", "--detect-every-n", "--downscale",
+        "--z-threshold", "--min-cohort", "--min-face-size", "--cohort-db",
+        "--camera", "--fourcc", "--source", "--width", "--height", "--fps",
+        "--target-fps", "--save-video", "--snapshot-dir", "--image", "--name",
+        "--title", "--scene", "--map-location", "--dir", "--id",
+        "--web-binary", "--port",
     };
 
     for (int i = 2; i < argc; ++i) {
@@ -54,15 +59,31 @@ CliArgs parse_cli(int argc, char** argv) {
             continue;
         }
 
+        bool takes_value = false;
+        for (const char* f : kValueFlags) {
+            if (key == f) { takes_value = true; break; }
+        }
+
         // Treat next token as value if it does not start with '-'
         if (i + 1 < argc && argv[i + 1][0] != '-') {
             out.opts[key] = argv[i + 1];
             ++i;
+        } else if (takes_value) {
+            // Fail loudly instead of storing "1": with the old behaviour a
+            // forgotten value (`verify --image`) or a swapped pair
+            // (`--db --name x`) put the literal string "1" into the config and
+            // it resurfaced much later as a bogus path or face id.
+            std::fprintf(stderr,
+                         "Missing value for %s.\n"
+                         "  Value-taking flags need an argument; if the value "
+                         "itself starts with '-',\n"
+                         "  write it as %s=<value>.\n",
+                         key.c_str(), key.c_str());
+            std::exit(2);
         } else {
             out.opts[key] = "1";
         }
     }
-    (void)need_value;  // silence unused-lambda warning when no error triggered
     return out;
 }
 
@@ -98,8 +119,8 @@ void print_usage(const char* prog) {
         "Common options (all commands):\n"
         "  --detection-model <path>     ONNX detection model (default: models/det_10g.onnx)\n"
         "  --recognition-model <path>   ONNX recognition model (default: models/w600k_r50.onnx)\n"
-        "  --db <path>                  SQLite database file (default: /tmp/face_db/faces.db)\n"
-        "  --faces-dir <path>           Directory to store face thumbnails (default: /tmp/face_db/faces)\n"
+        "  --db <path>                  SQLite database file (default: /data/hhqs_data/face_db/faces.db)\n"
+        "  --faces-dir <path>           Directory to store face thumbnails (default: /data/hhqs_data/face_db/faces)\n"
         "  --detection-threshold <f>    Face detection confidence (default: 0.5)\n"
         "  --recognition-threshold <f>  Recognition similarity (default: 0.5)\n"
         "                              NOTE: 0.7 (the old default) rejects most live-camera\n"

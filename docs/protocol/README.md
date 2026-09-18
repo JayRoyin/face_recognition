@@ -36,8 +36,8 @@
 |---|---|
 | Web 后台 HTTP 端口 | `8080` |
 | MJPEG 推流端口 | `8090` |
-| SQLite 数据库 | `/tmp/face_db/faces.db` |
-| 人脸缩略图目录 | `/tmp/face_db/faces` |
+| SQLite 数据库 | `/data/hhqs_data/face_db/faces.db` |
+| 人脸缩略图目录 | `/data/hhqs_data/face_db/faces` |
 | 输入图像话题 | `/image_raw` |
 | 识别结果话题 | `/face/recognition_result` |
 | 标注图话题 | `/face/annotated` |

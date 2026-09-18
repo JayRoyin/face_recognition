@@ -91,7 +91,7 @@ APP=./install/bin/face_recognition_app
 $APP web --port 8080
 # 也可直接启动：
 # ./install/bin/face_db_web --port 8080 \
-#     --db /tmp/face_db/faces.db --faces-dir /tmp/face_db/faces \
+#     --db /data/hhqs_data/face_db/faces.db --faces-dir /data/hhqs_data/face_db/faces \
 #     --detection-model "$PWD/models/det_10g.onnx" \
 #     --recognition-model "$PWD/models/w600k_r50.onnx"
 

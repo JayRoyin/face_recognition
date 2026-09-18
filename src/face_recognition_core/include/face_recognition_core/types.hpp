@@ -34,7 +34,9 @@ struct FaceInfo {
     float confidence = 0.0f;
     std::string scene;
     std::string map_location;
-    time_t timestamp;
+    // Default-initialised: reading an uninitialised time_t is UB and shows up as
+    // a garbage timestamp that is very hard to trace back to its origin.
+    time_t timestamp = 0;
     BoundingBox bbox;
 };
 
@@ -46,16 +48,16 @@ struct FaceRecord {
     std::string image_path;
     std::string scene;
     std::string map_location;
-    time_t created_at;
-    time_t updated_at;
+    time_t created_at = 0;
+    time_t updated_at = 0;
 };
 
 struct RecognitionResult {
-    bool success;
+    bool success = false;
     std::string message;
     std::string id;
     std::string name;
-    float similarity;
+    float similarity = 0.0f;
     BoundingBox bbox;
 };
 
@@ -115,7 +117,7 @@ enum class ImageSourceType {
 };
 
 struct ImageSource {
-    ImageSourceType type;
+    ImageSourceType type = ImageSourceType::FILE;
     std::string url_or_topic;
 };
 

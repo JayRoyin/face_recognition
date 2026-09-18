@@ -81,8 +81,8 @@ Press `q` / `ESC` in the window to stop, or `Ctrl+C` in a terminal.
 | --- | --- |
 | `--detection-model` | `models/det_10g.onnx` |
 | `--recognition-model` | `models/w600k_r50.onnx` |
-| `--db` | `/tmp/face_db/faces.db` |
-| `--faces-dir` | `/tmp/face_db/faces` |
+| `--db` | `/data/hhqs_data/face_db/faces.db` |
+| `--faces-dir` | `/data/hhqs_data/face_db/faces` |
 | `--detection-threshold` | `0.5` |
 | `--recognition-threshold` | `0.5` |
 | `--nms-threshold` | `0.5` |
