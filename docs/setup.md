@@ -121,7 +121,7 @@ sudo apt install -y ros-noetic-usb-cam     # ROS1
 ## 5. 一键构建
 
 ```bash
-cd ~/Royin_Project/face_recognition
+cd ~/face_recognition
 
 # ① 下载模型（必须，首次执行）
 ./build.sh MODELS
@@ -245,7 +245,7 @@ BUILD_SPATIALITE=ON ./build.sh ALL
 ### 8.1 不依赖 ROS：Web 传图录入 → 实时识别（推荐先做这一步）
 
 ```bash
-cd ~/Royin_Project/face_recognition
+cd ~/face_recognition
 
 # ① 确认模型就位
 ls -l models/det_10g.onnx models/w600k_r50.onnx

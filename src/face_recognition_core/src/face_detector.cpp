@@ -576,6 +576,16 @@ void FaceDetector::setInputSize(int width, int height) {
     }
 }
 
+void FaceDetector::setConfidenceThreshold(float threshold) {
+    if (threshold < 0.01f) threshold = 0.01f;
+    if (threshold > 0.99f) threshold = 0.99f;
+    pImpl->confidence_threshold = threshold;
+}
+
+float FaceDetector::confidenceThreshold() const {
+    return pImpl->confidence_threshold;
+}
+
 std::string FaceDetector::backend() const {
     return pImpl->backend_name;
 }

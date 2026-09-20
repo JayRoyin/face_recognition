@@ -31,17 +31,45 @@ public:
     bool initialize(const std::string& db_path, const std::string& faces_dir);
 
     // --- identities ---------------------------------------------------------
+    /**
+     * @param gender      stored gender ("unknown" / "male" / "female").
+     * @param image_hash  caller-supplied SHA-256 of `image_data` (see
+     *                    FaceRecord::image_hash). Pass "" to skip; the importer
+     *                    always supplies it so duplicates can be recognised.
+     */
     std::string add_face(const std::string& name,
                         const std::vector<float>& embedding,
                         const std::vector<uint8_t>& image_data = {},
                         const std::string& title = "",
                         const std::string& scene = "default",
-                        const std::string& map_location = "unknown");
+                        const std::string& map_location = "unknown",
+                        const std::string& gender = "unknown",
+                        const std::string& image_hash = "");
     bool remove_face(const std::string& face_id);
     std::shared_ptr<FaceRecord> get_face(const std::string& face_id);
     std::vector<FaceRecord> list_faces();
     int  clear_all();
     int  get_face_count();
+
+    /**
+     * Edit the mutable metadata of an existing identity (used by the web
+     * gallery editor). A field left EMPTY keeps its current value, so a
+     * caller that only wants to change `scene` does not have to re-send
+     * (and risk blanking) the other fields.
+     *
+     * Returns false when `face_id` does not exist or the update fails.
+     *
+     * `image_path` follows the same rule; pass the value returned by
+     * save_image() after replacing a record's photo.
+     */
+    bool update_face(const std::string& face_id,
+                     const std::string& name,
+                     const std::string& title,
+                     const std::string& scene,
+                     const std::string& map_location,
+                     const std::string& image_path = "",
+                     const std::string& gender = "",
+                     const std::string& image_hash = "");
 
     // --- extra templates (multi-shot) ---------------------------------------
     bool add_template(const std::string& face_id,
@@ -97,6 +125,14 @@ public:
     bool set_meta(const std::string& key, const std::string& value);
     /** Read it back. Returns an empty string when the key is absent. */
     std::string get_meta(const std::string& key) const;
+
+    /**
+     * Look up an already-stored image by its content hash — the importer's
+     * "is this exact photo already enrolled?" question.
+     *
+     * Returns nullptr when `image_hash` is empty or no record matches.
+     */
+    std::shared_ptr<FaceRecord> find_by_image_hash(const std::string& image_hash);
 
 private:
     class Impl;

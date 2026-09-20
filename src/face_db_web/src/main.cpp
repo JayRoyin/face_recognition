@@ -24,6 +24,12 @@ namespace {
 
 std::unique_ptr<face_db_web::HttpServer> g_server;
 
+/** Flags that relax the confirmation gate; applied after the file is read. */
+struct PolicyOverrides {
+    bool auto_cross_scene = false;
+    bool no_confirm       = false;
+} policy_overrides;
+
 const char* kDetName = "det_10g.onnx";
 const char* kRecName = "w600k_r50.onnx";
 
@@ -74,10 +80,27 @@ void printUsage(const char* prog) {
         << "  --db PATH                    SQLite database path (required)\n"
         << "  --faces-dir PATH             Directory for face images (required)\n"
         << "  --detection-model PATH       RetinaFace/YOLO .onnx (default: auto-discovered)\n"
+        << "  --det-threshold F            Detection confidence threshold, 0..1\n"
+        << "                               (default: 0.5; lower it, e.g. 0.3, when\n"
+        << "                               curated ID photos are missed)\n"
         << "  --recognition-model PATH     ArcFace .onnx (default: auto-discovered)\n"
         << "  --allow-no-embedding         Permit saving records WITHOUT an embedding.\n"
         << "                               Such records can never be matched by the\n"
         << "                               recognizer, so this is off by default.\n"
+        << "  --max-upload-mb MB           Max request body, for bulk import\n"
+        << "                               (default: 512; a zip of photos or a\n"
+        << "                               grid of images is posted in one request)\n"
+        << "\n"
+        << "Re-enrolment policy (uploads that look like someone already stored):\n"
+        << "  --enroll-policy PATH         JSON rules file (env: FACE_ENROLL_POLICY)\n"
+        << "  --high-similarity F          Similarity that triggers confirmation\n"
+        << "                               (default: 0.80)\n"
+        << "  --auto-cross-scene           Do NOT ask when the match is in another\n"
+        << "                               scene (same-scene still always asks)\n"
+        << "  --no-confirm                 DANGEROUS: write everything without\n"
+        << "                               asking, even above the threshold\n"
+        << "  --print-enroll-policy        Print a documented policy template\n"
+        << "\n"
         << "  --help                       Show this help\n"
         << "\n"
         << "Embedding extraction is enabled automatically when both models can be\n"
@@ -94,6 +117,11 @@ int main(int argc, char* argv[]) {
     std::string detection_model;
     std::string recognition_model;
     bool allow_no_embedding = false;
+    int  max_upload_mb = 512;
+    float det_threshold = 0.5f;
+    std::string enroll_policy_path;
+    bool cli_high_similarity_set = false;
+    float cli_high_similarity = 0.80f;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -109,6 +137,22 @@ int main(int argc, char* argv[]) {
             recognition_model = argv[++i];
         } else if (arg == "--allow-no-embedding") {
             allow_no_embedding = true;
+        } else if (arg == "--max-upload-mb" && i + 1 < argc) {
+            max_upload_mb = std::atoi(argv[++i]);
+        } else if (arg == "--det-threshold" && i + 1 < argc) {
+            det_threshold = static_cast<float>(std::atof(argv[++i]));
+        } else if (arg == "--enroll-policy" && i + 1 < argc) {
+            enroll_policy_path = argv[++i];
+        } else if (arg == "--high-similarity" && i + 1 < argc) {
+            cli_high_similarity = static_cast<float>(std::atof(argv[++i]));
+            cli_high_similarity_set = true;
+        } else if (arg == "--auto-cross-scene") {
+            policy_overrides.auto_cross_scene = true;
+        } else if (arg == "--no-confirm") {
+            policy_overrides.no_confirm = true;
+        } else if (arg == "--print-enroll-policy") {
+            std::cout << face_db_web::defaultPolicyJson() << std::endl;
+            return 0;
         } else if (arg == "--help" || arg == "-h") {
             printUsage(argv[0]);
             return 0;
@@ -124,6 +168,8 @@ int main(int argc, char* argv[]) {
         printUsage(argv[0]);
         return 1;
     }
+    if (max_upload_mb < 1) max_upload_mb = 1;
+    if (det_threshold <= 0.0f || det_threshold >= 1.0f) det_threshold = 0.5f;
 
     auto database = std::make_shared<face_recognition::FaceDatabase>();
     if (!database->initialize(db_path, faces_dir)) {
@@ -146,7 +192,7 @@ int main(int argc, char* argv[]) {
 
     if (!detection_model.empty()) {
         detector = std::make_shared<face_recognition::FaceDetector>();
-        if (!detector->initialize(detection_model)) {
+        if (!detector->initialize(detection_model, det_threshold)) {
             std::cerr << "[WARN] detection model failed to load: " << detection_model
                       << " (" << detector->getLastError() << ")\n";
             detector.reset();
@@ -187,14 +233,56 @@ int main(int argc, char* argv[]) {
             << std::endl;
     }
 
-    face_db_web::FaceHandler handler(database, detector, recognizer, require_embedding);
+    // ---- re-enrolment policy ----------------------------------------------
+    face_db_web::EnrollPolicy policy;
+    if (enroll_policy_path.empty()) {
+        if (const char* e = std::getenv("FACE_ENROLL_POLICY")) enroll_policy_path = e;
+    }
+    std::string policy_err;
+    if (!enroll_policy_path.empty()) {
+        if (!face_db_web::loadEnrollPolicy(enroll_policy_path, policy, policy_err)) {
+            std::cerr << "[ERROR] enroll policy: " << policy_err << std::endl;
+            return 1;
+        }
+        std::cout << "Enroll policy:      " << enroll_policy_path << std::endl;
+    }
+    if (cli_high_similarity_set) policy.high_similarity = cli_high_similarity;
+    if (policy_overrides.auto_cross_scene) policy.confirm_on_cross_scene = false;
+    if (policy_overrides.no_confirm) {
+        policy.require_confirmation = false;
+        std::cerr << "\n[WARNING] --no-confirm: highly similar faces will be written "
+                     "WITHOUT asking.\n" << std::endl;
+    }
 
-    g_server = std::make_unique<face_db_web::HttpServer>(port);
+    std::cout << "Re-enrolment:       confirm at similarity >= "
+              << policy.high_similarity
+              << (policy.require_confirmation
+                      ? std::string(" (same-scene: ") +
+                            (policy.confirm_on_same_scene ? "ask" : "auto") +
+                            ", cross-scene: " +
+                            (policy.confirm_on_cross_scene ? "ask" : "auto") + ")"
+                      : std::string(" DISABLED"))
+              << std::endl;
+
+    face_db_web::FaceHandler handler(database, detector, recognizer, require_embedding, policy);
+
+    // Bulk import posts a whole archive (or a grid of images) in one request,
+    // so the body cap has to be much larger than the old fixed 16 MiB.
+    const std::size_t max_body =
+        static_cast<std::size_t>(max_upload_mb) * 1024u * 1024u;
+
+    g_server = std::make_unique<face_db_web::HttpServer>(port, max_body);
     g_server->get("/", [&handler](const face_db_web::HttpRequest& req) { return handler.index(req); });
     g_server->get("/api/faces", [&handler](const face_db_web::HttpRequest& req) { return handler.listFaces(req); });
     g_server->post("/api/faces/add", [&handler](const face_db_web::HttpRequest& req) { return handler.addFace(req); });
     g_server->post("/api/faces/remove", [&handler](const face_db_web::HttpRequest& req) { return handler.removeFace(req); });
     g_server->post("/api/faces/clear", [&handler](const face_db_web::HttpRequest& req) { return handler.clearFaces(req); });
+    g_server->post("/api/faces/update", [&handler](const face_db_web::HttpRequest& req) { return handler.updateFace(req); });
+    g_server->post("/api/faces/import-batch", [&handler](const face_db_web::HttpRequest& req) { return handler.importBatch(req); });
+    g_server->post("/api/faces/import-archive", [&handler](const face_db_web::HttpRequest& req) { return handler.importArchive(req); });
+    g_server->post("/api/faces/resolve", [&handler](const face_db_web::HttpRequest& req) { return handler.resolvePending(req); });
+    g_server->get("/api/faces/pending", [&handler](const face_db_web::HttpRequest& req) { return handler.listPending(req); });
+    g_server->get("/api/pending/image/", [&handler](const face_db_web::HttpRequest& req) { return handler.pendingImage(req); });
     g_server->get("/api/image/", [&handler](const face_db_web::HttpRequest& req) { return handler.getImage(req); });
 
     std::signal(SIGINT, signalHandler);
@@ -211,6 +299,7 @@ int main(int argc, char* argv[]) {
     std::cout << "Embedding extraction: "
               << (embedding_ready ? "ENABLED" : "DISABLED (see warning above)")
               << std::endl;
+    std::cout << "Max request body:    " << max_upload_mb << " MB" << std::endl;
     std::cout << "Press Ctrl+C to stop" << std::endl;
 
     while (true) {

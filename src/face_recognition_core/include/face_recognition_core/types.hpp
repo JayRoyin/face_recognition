@@ -50,6 +50,29 @@ struct FaceRecord {
     std::string map_location;
     time_t created_at = 0;
     time_t updated_at = 0;
+
+    /**
+     * Gallery-level gender, stored in the database (not a UI-only field).
+     * Free-form but conventionally "unknown" / "male" / "female".
+     */
+    std::string gender = "unknown";
+
+    /**
+     * SHA-256 of the stored image bytes.
+     *
+     * Lets the importer recognise the very same photo even when it was renamed
+     * or re-exported, which is the only reliable "already enrolled" signal:
+     * two different photos of one person are NOT duplicates (they are extra
+     * templates), while one photo imported twice always is.
+     */
+    std::string image_hash;
+
+    /**
+     * Auto-maintained integer id (see face_database.hpp). Used as the stable
+     * sort order and as the human-facing "record #N" inside the gallery.
+     * Internal: never serialised to the HTTP API.
+     */
+    long long uid = 0;
 };
 
 struct RecognitionResult {
@@ -83,6 +106,12 @@ struct MatchCandidate {
     float       similarity     = 0.0f;
     long long   template_id    = -1;   // -1 => the primary faces.embedding
     int         template_count = 0;
+    /**
+     * Scene of the matched identity. Needed by the re-enrolment policy, which
+     * treats "same person, same scene" differently from "same person, another
+     * scene": without it the caller has to re-read the whole gallery.
+     */
+    std::string scene;
 };
 
 /**

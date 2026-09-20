@@ -276,7 +276,7 @@ Apache-2.0 只覆盖**本仓库自行编写的代码**。第三方依赖、以�
 - **util-linux（BSD-3-Clause）**
 - **Ultralytics YOLOv8（AGPL-3.0）**
 
-> ⚠️ **默认模型权重不可商用**：`det_10g.onnx` / `w600k_r50.onnx` 来自 InsightFace 的
+> ⚠️ **默认模型权重不可商用**：`det_10g.onnx` / `w600k_r50.onnx` 来自 [InsightFace](https://github.com/deepinsight/insightface) 的
 > `buffalo_l` 包，上游声明**仅供非商业研究**。若要把本项目用于商业场景，请改用
 > Apache-2.0 的 [OpenCV Zoo](https://github.com/opencv/opencv_zoo)（YuNet + SFace）
 > 或自行训练 / 采购授权的模型，再按 [常见问题排查](docs/FAQ/troubleshooting.md) 的

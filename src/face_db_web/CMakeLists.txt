@@ -10,6 +10,8 @@ endif()
 
 find_package(OpenCV 4.5 REQUIRED)
 find_package(PkgConfig REQUIRED)
+# Bulk import decodes zip deflate streams and gzip-wrapped tarballs.
+find_package(ZLIB REQUIRED)
 
 pkg_check_modules(MICROHTTPD REQUIRED libmicrohttpd)
 
@@ -25,24 +27,46 @@ pkg_check_modules(MICROHTTPD REQUIRED libmicrohttpd)
 # ---------------------------------------------------------------------------
 find_package(face_recognition_core 1.0 REQUIRED)
 
+# ---------------------------------------------------------------------------
+# Fallback copy of the UI. templates/index.html stays the editable source of
+# truth; this only guarantees the page is available when the binary runs
+# without the template directory beside it.
+# ---------------------------------------------------------------------------
+file(READ "${CMAKE_CURRENT_SOURCE_DIR}/templates/index.html" FACE_DB_WEB_INDEX_HTML_HEX HEX)
+if(FACE_DB_WEB_INDEX_HTML_HEX STREQUAL "")
+  message(FATAL_ERROR "templates/index.html is empty or missing")
+endif()
+string(REGEX REPLACE "([0-9a-f][0-9a-f])" "0x\\1," FACE_DB_WEB_INDEX_HTML_BYTES
+       "${FACE_DB_WEB_INDEX_HTML_HEX}")
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/index_html.hpp.in"
+  "${CMAKE_CURRENT_BINARY_DIR}/generated/face_db_web/index_html.hpp"
+  @ONLY)
+
 set(SOURCES
     src/main.cpp
     src/http_server.cpp
     src/face_handler.cpp
+    src/archive_reader.cpp
+    src/enroll_policy.cpp
+    src/pending_store.cpp
 )
 
 add_executable(face_db_web ${SOURCES})
 
 target_include_directories(face_db_web PRIVATE
   include
+  ${CMAKE_CURRENT_BINARY_DIR}/generated
   ${OpenCV_INCLUDE_DIRS}
   ${MICROHTTPD_INCLUDE_DIRS}
+  ${ZLIB_INCLUDE_DIRS}
 )
 
 target_link_libraries(face_db_web
   face_recognition_core::face_recognition_core
   ${OpenCV_LIBS}
   ${MICROHTTPD_LIBRARIES}
+  ${ZLIB_LIBRARIES}
   dl
 )
 

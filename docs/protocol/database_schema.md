@@ -21,8 +21,21 @@ CREATE TABLE IF NOT EXISTS faces (
     scene        TEXT,
     map_location TEXT,
     created_at   INTEGER,
-    updated_at   INTEGER
+    updated_at   INTEGER,
+    gender       TEXT DEFAULT 'unknown',  -- unknown / male / female
+    image_hash   TEXT,                    -- SHA-256(图片字节)，导入去重依据
+    uid          INTEGER                  -- 数据库自动维护的自增序号（排序键）
 );
+
+-- uid 由触发器维护：任何写入方（CLI / Web / ROS）都共用同一个计数器
+CREATE TRIGGER IF NOT EXISTS faces_uid_ai
+AFTER INSERT ON faces WHEN NEW.uid IS NULL
+BEGIN
+  UPDATE faces SET uid = (SELECT COALESCE(MAX(uid), 0) + 1 FROM faces)
+  WHERE id = NEW.id;
+END;
+CREATE INDEX IF NOT EXISTS idx_faces_image_hash ON faces(image_hash);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_uid ON faces(uid);
 
 -- 额外模板（multi-shot）：一个人可以有任意多"枪"
 CREATE TABLE IF NOT EXISTS face_templates (
@@ -54,7 +67,31 @@ CREATE INDEX IF NOT EXISTS idx_face_templates_face_id
 | `scene` | TEXT | 是 | 场景标签，默认 `default` |
 | `map_location` | TEXT | 是 | 物理位置，默认 `unknown` |
 | `created_at` | INTEGER | 是 | Unix 时间戳（秒），`time(nullptr)` |
-| `updated_at` | INTEGER | 是 | 新增时等于 `created_at`；`update_embedding` 时刷新 |
+| `updated_at` | INTEGER | 是 | 新增时等于 `created_at`；`update_embedding` / `update_face` 时刷新 |
+| `gender` | TEXT | 是 | 性别，`unknown` / `male` / `female`，默认 `unknown`（**数据库字段**，非前端私有） |
+| `image_hash` | TEXT | 是 | 存储图片字节的 SHA-256（64 位小写 hex），导入去重的**唯一内容依据** |
+| `uid` | INTEGER | 是 | 数据库自动维护的自增序号：列表**排序标准**与库内编号；触发器赋值，不对外暴露 |
+
+### uid 的维护方式
+
+- 新增行不写 `uid`（`INSERT` 语句里没有这一列），由 `faces_uid_ai` 触发器
+  `AFTER INSERT` 补上 `MAX(uid)+1`
+- 这样 CLI、Web、ROS1/ROS2 四个写入方共用同一个计数器；若由某个进程自己
+  维护自增，多进程并发写入必然撞号
+- 老库升级时按 `rowid` 回填（即历史插入顺序），因此序号稳定、不跳变
+- **不出现在 HTTP API 的响应里**：`/api/faces` 只返回 UUID `id`，`uid` 仅用于
+  库内排序与运维
+
+### image_hash 与去重
+
+同一张照片即使被改名、被重新导出（EXIF/压缩参数变化），像素内容仍然一致；
+反之同一个人不同照片**不算重复**（多模板是合法场景）。因此：
+
+| 判定 | 依据 | 处理 |
+|---|---|---|
+| 完全重复 | `image_hash` 相同（批内 或 库内） | **跳过**，返回友好提示 |
+| 批次内同名 | 文件名相同 | **跳过**（仅同批次内比对） |
+| 疑似同一人 | 512 维特征余弦 ≥ 0.70 | 默认**入库 + 提示**，可 `on_similar=skip` 改为跳过 |
 
 ### embedding 的二进制布局
 
@@ -115,6 +152,19 @@ sqlite3 "$DB" "SELECT id, name FROM faces \
 sqlite3 -header -column "$DB" \
   "SELECT scene, COUNT(*) AS n FROM faces GROUP BY scene;"
 
+# 按性别统计
+sqlite3 -header -column "$DB" \
+  "SELECT gender, COUNT(*) AS n FROM faces GROUP BY gender;"
+
+# 按入库顺序（uid）列出
+sqlite3 -header -column "$DB" \
+  "SELECT uid, name, title, gender FROM faces ORDER BY uid;"
+
+# 查重复：同一张图被录了多次
+sqlite3 -header -column "$DB" \
+  "SELECT image_hash, COUNT(*) AS n, group_concat(name) FROM faces
+   WHERE image_hash IS NOT NULL GROUP BY image_hash HAVING n > 1;"
+
 # 删除某条记录（注意：不会删除磁盘上的缩略图）
 sqlite3 "$DB" "DELETE FROM faces WHERE id = '<UUID>';"
 ```
@@ -157,6 +207,7 @@ sqlite3 "$DB" "DELETE FROM faces WHERE id = '<UUID>';"
 | 变更 | 兼容性 |
 |---|---|
 | 新增可空列 | 旧二进制可继续运行（未使用新列） |
+| 新增 `gender` / `image_hash` / `uid` 列 | **自动迁移**：`initialize()` 用 `PRAGMA table_info` 检查后 `ALTER TABLE ADD COLUMN`，老库启动即升级，无需手工操作 |
 | 修改 `embedding` 维度 | **不兼容**，库内旧特征无法匹配，需重新入库 |
 | 修改识别模型 | 需**清空并重建**人脸库，ArcFace 特征空间不通用 |
 | 更换识别前端（对齐 ↔ bbox 裁剪） | **不兼容**，两个前端不在同一特征子空间；执行 `backfill --all` 用存档缩略图重建 |

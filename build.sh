@@ -133,10 +133,14 @@ check_dependencies() {
         missing_deps+=("uuid-dev")
     fi
 
-    # Web target additionally needs libmicrohttpd.
+    # Web target additionally needs libmicrohttpd and zlib (bulk import
+    # unpacks zip / tar.gz in-process).
     if [ "$target" = "WEB" ] || [ "$target" = "ALL" ]; then
         if ! ldconfig -p | grep -q libmicrohttpd; then
             missing_deps+=("libmicrohttpd-dev  # required by WEB")
+        fi
+        if ! echo '#include <zlib.h>' | cc -E - >/dev/null 2>&1; then
+            missing_deps+=("zlib1g-dev  # required by WEB (archive import)")
         fi
     fi
 

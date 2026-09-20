@@ -1,2 +1,862 @@
-<!-- Custom template can override the built-in index page -->
-<!-- See src/face_handler.cpp for the embedded default -->
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>人脸库管理</title>
+<style>
+:root {
+  --bg: #f4f6fb;
+  --panel: #ffffff;
+  --line: #e3e8f0;
+  --text: #1f2937;
+  --muted: #6b7280;
+  --brand: #3b6ef5;
+  --brand-dark: #2f57c9;
+  --ok: #16a34a;
+  --warn: #d97706;
+  --err: #dc2626;
+  --radius: 12px;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; padding: 24px; background: var(--bg); color: var(--text);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+               "Microsoft YaHei", Roboto, Arial, sans-serif;
+  font-size: 14px; line-height: 1.5;
+}
+h1 { font-size: 20px; margin: 0; }
+h2 { font-size: 15px; margin: 0 0 12px; }
+.muted { color: var(--muted); }
+.small { font-size: 12px; }
+.shell { max-width: 1280px; margin: 0 auto; }
+header.top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; }
+.badge {
+  display: inline-block; padding: 2px 10px; border-radius: 999px;
+  background: #e8eefc; color: var(--brand-dark); font-size: 12px;
+}
+.summary { cursor: pointer; font-size: 15px; font-weight: 600; }
+.panel {
+  background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius);
+  padding: 18px; margin-bottom: 16px; box-shadow: 0 1px 3px rgba(16,24,40,.05);
+}
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+@media (max-width: 900px) { .grid2 { grid-template-columns: 1fr; } }
+
+/* --- inputs / buttons --- */
+input[type=text], select {
+  width: 100%; padding: 7px 10px; border: 1px solid var(--line);
+  border-radius: 8px; font-size: 13px; background: #fff; color: var(--text);
+}
+input[type=text]:focus, select:focus { outline: 2px solid #c7d7fd; border-color: var(--brand); }
+label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4px; }
+.btn {
+  padding: 8px 16px; border: none; border-radius: 8px; cursor: pointer;
+  background: var(--brand); color: #fff; font-size: 13px;
+}
+.btn:hover { background: var(--brand-dark); }
+.btn.ghost { background: #fff; color: var(--text); border: 1px solid var(--line); }
+.btn.ghost:hover { background: #f2f5fb; }
+.btn.danger { background: var(--err); }
+.btn.danger:hover { background: #b91c1c; }
+.btn:disabled { opacity: .55; cursor: not-allowed; }
+.row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
+.row > div { flex: 1 1 140px; }
+
+/* --- dropzone --- */
+.drop {
+  border: 2px dashed #c3cee3; border-radius: var(--radius); background: #fbfcff;
+  padding: 26px 16px; text-align: center; cursor: pointer; transition: .15s;
+}
+.drop:hover { border-color: var(--brand); background: #f3f7ff; }
+.drop.dragover { border-color: var(--brand); background: #e8f0ff; }
+.drop .big { font-size: 15px; font-weight: 600; margin-bottom: 4px; }
+
+/* --- image grid --- */
+.toolbar {
+  display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap;
+  padding: 12px; background: #f8fafd; border: 1px solid var(--line);
+  border-radius: var(--radius); margin-bottom: 14px;
+}
+.cards {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
+  gap: 14px;
+}
+.card {
+  border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+  background: #fff; display: flex; flex-direction: column; position: relative;
+}
+.card.done { border-color: #b6e3c6; background: #f6fdf8; }
+.card.failed { border-color: #f3c2c2; background: #fff7f7; }
+.card.dup { border-color: #f0d9a8; background: #fffaf0; }
+.card .thumb {
+  width: 100%; height: 150px; object-fit: cover; background: #eef1f6; display: block;
+}
+.card .body { padding: 10px; display: grid; gap: 6px; }
+.card .fname {
+  font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden;
+  text-overflow: ellipsis;
+}
+.card .zip { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+.card .pname { font-size: 15px; font-weight: 600; }
+.card .prole { min-height: 16px; }
+/* --- 高相似度对比卡片 --- */
+.card.confirm { border-color: #f0d9a8; }
+.cmp { display: grid; grid-template-columns: 1fr 58px 1fr; align-items: center; background: #f8fafd; }
+.cmp .thumb { height: 118px; }
+.cmp-col { padding: 8px; text-align: center; }
+.cmp-mid { text-align: center; font-weight: 700; color: var(--warn); font-size: 13px; }
+.acts { display: flex; gap: 12px; flex-wrap: wrap; margin-top: 2px; }
+.act { font-size: 13px; display: flex; align-items: center; gap: 4px; cursor: pointer; }
+.card .kv { display: flex; gap: 6px; font-size: 12px; }
+.card .kv .k { color: var(--muted); flex: 0 0 30px; }
+.card .kv .v { word-break: break-all; }
+.card .foot { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
+.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.status { font-size: 12px; }
+.status.ok { color: var(--ok); }
+.status.err { color: var(--err); }
+.status.warn { color: var(--warn); }
+.status.pending { color: var(--muted); }
+.empty { padding: 30px; text-align: center; color: var(--muted); }
+
+.actions { display: flex; gap: 6px; }
+.linkbtn { background: none; border: none; color: var(--brand); cursor: pointer; padding: 0; font-size: 13px; }
+.linkbtn.danger { color: var(--err); }
+
+/* --- report --- */
+.report { margin-top: 14px; border: 1px solid var(--line); border-radius: var(--radius); }
+.report .head { padding: 10px 14px; background: #f8fafd; border-bottom: 1px solid var(--line); }
+.report ul { margin: 0; padding: 8px 14px 12px 30px; max-height: 260px; overflow: auto; }
+.report li { font-size: 13px; padding: 2px 0; }
+.spinner {
+  display: inline-block; width: 14px; height: 14px; border: 2px solid #c7d7fd;
+  border-top-color: var(--brand); border-radius: 50%; animation: spin .8s linear infinite;
+  vertical-align: -2px;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.hidden { display: none !important; }
+</style>
+</head>
+<body>
+<div class="shell">
+  <header class="top">
+    <h1>人脸库管理</h1>
+    <div><span class="badge" id="count">0 条记录</span></div>
+  </header>
+
+  <!-- ======================= 批量导入 ======================= -->
+  <section>
+    <div class="grid2">
+      <!-- 方式一：压缩包 -->
+      <div class="panel">
+        <h2>方式一 · 上传压缩包</h2>
+        <div class="small muted" style="margin-bottom:10px">
+          支持 <b>.zip / .tar / .tar.gz / .tgz</b>，包内图片仅限 <b>png / jpg</b>，
+          文件名严格按 <b>title_name</b> 命名（如 <code>工程师_张三.png</code>），
+          导入时自动按文件名填充「职位 / 姓名」。
+        </div>
+        <div class="drop" id="drop-archive">
+          <div class="big">拖拽压缩包到此处</div>
+          <div class="small muted">或点击选择文件</div>
+        </div>
+        <input type="file" id="file-archive" accept=".zip,.tar,.gz,.tgz" class="hidden">
+        <div class="row" style="margin-top:12px">
+          <div><label class="fld">默认场景 scene</label><input type="text" id="ar-scene" value="default"></div>
+          <div><label class="fld">默认位置 map_location</label><input type="text" id="ar-map" value="unknown"></div>
+          <div><label class="fld">默认性别 gender</label>
+            <select id="ar-gender">
+              <option value="unknown">未知</option>
+              <option value="male">男</option>
+              <option value="female">女</option>
+            </select>
+          </div>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <div style="flex:0 0 auto">
+            <button class="btn" id="btn-archive" onclick="submitArchive()" disabled>导入压缩包</button>
+          </div>
+          <div class="small muted" id="ar-hint">未选择压缩包</div>
+        </div>
+      </div>
+
+      <!-- 方式二：图片批量 -->
+      <div class="panel">
+        <h2>方式二 · 拖入图片后归档编辑</h2>
+        <div class="small muted" style="margin-bottom:10px">
+          一次拖入大量 <b>png / jpg</b> 图片，系统先按 <b>title_name</b>
+          自动填入姓名与职位，可在下方宫格中逐张修改，确认后一次性保存并重建特征。
+        </div>
+        <div class="drop" id="drop-images">
+          <div class="big">拖拽图片到此处（可多选）</div>
+          <div class="small muted">或点击选择文件</div>
+        </div>
+        <input type="file" id="file-images" accept="image/png,image/jpeg" multiple class="hidden">
+        <div class="small muted" style="margin-top:8px" id="img-hint">尚未选择图片</div>
+      </div>
+    </div>
+
+    <!-- 宫格编辑器 -->
+    <div class="panel hidden" id="editor">
+      <h2>归档编辑 <span class="muted small" id="editor-count"></span></h2>
+      <div class="toolbar">
+        <div style="flex:1 1 150px">
+          <label class="fld">批量填充 scene</label>
+          <input type="text" id="bulk-scene" placeholder="留空则不修改">
+        </div>
+        <div style="flex:1 1 150px">
+          <label class="fld">批量填充 map_location</label>
+          <input type="text" id="bulk-map" placeholder="留空则不修改">
+        </div>
+        <div style="flex:0 0 120px">
+          <label class="fld">批量设置性别</label>
+          <select id="bulk-gender">
+            <option value="">留空</option>
+            <option value="male">男</option>
+            <option value="female">女</option>
+            <option value="unknown">未知</option>
+          </select>
+        </div>
+        <div style="flex:0 0 auto"><button class="btn ghost" onclick="applyBulk()">应用到全部</button></div>
+        <div style="flex:0 0 auto"><button class="btn ghost" onclick="reparseNames()">按文件名重新解析</button></div>
+        <div style="flex:0 0 auto"><button class="btn ghost" onclick="removeSelected()">删除选中</button></div>
+        <div style="flex:0 0 auto"><button class="btn ghost" onclick="clearItems()">清空</button></div>
+        <div style="flex:0 0 auto"><button class="btn" id="btn-save" onclick="submitBatch()">保存入库并重建特征</button></div>
+      </div>
+      <div class="cards" id="cards"></div>
+      <div class="empty hidden" id="cards-empty">还没有图片，先在上方拖入一些吧</div>
+    </div>
+
+    <div class="report hidden" id="report">
+      <div class="head" id="report-head"></div>
+      <ul id="report-list"></ul>
+    </div>
+
+    <!-- ============ 高相似度待确认（必须人工决定后才入库） ============ -->
+    <div class="panel hidden" id="confirm-panel">
+      <div class="row" style="align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0;flex:0 0 auto">待确认入库 <span class="muted small" id="confirm-count"></span></h2>
+        <div style="flex:0 0 auto;display:flex;gap:8px">
+          <button class="btn ghost" onclick="setAllAction('enroll')">全部入库</button>
+          <button class="btn ghost" onclick="setAllAction('replace')">全部替换</button>
+          <button class="btn ghost" onclick="setAllAction('skip')">全部跳过</button>
+          <button class="btn" onclick="submitDecisions()">提交确认</button>
+        </div>
+      </div>
+      <div class="small muted" style="margin-bottom:12px">
+        以下是与库中已有人员<strong>相似度达到阈值</strong>的图片，<strong>未经你确认不会写入人脸库</strong>。
+        请选择每张的处理方式：<em>入库</em>（新增一条记录）、<em>替换</em>（更新库中该记录的照片与特征）、
+        <em>跳过</em>（丢弃本次上传）。
+      </div>
+      <div class="cards" id="confirm-cards"></div>
+    </div>
+
+    <!-- ======================= 新增单张（折叠） ======================= -->
+    <details class="panel">
+      <summary class="summary">新增单张（手动录入）</summary>
+      <div class="row" style="margin-top:12px">
+        <div><label class="fld">姓名 name</label><input type="text" id="one-name" placeholder="张三"></div>
+        <div><label class="fld">职位 title</label><input type="text" id="one-title" placeholder="工程师"></div>
+        <div><label class="fld">场景 scene</label><input type="text" id="one-scene" value="default"></div>
+        <div><label class="fld">位置 map_location</label><input type="text" id="one-map" value="unknown"></div>
+        <div><label class="fld">性别 gender</label>
+          <select id="one-gender">
+            <option value="unknown">未知</option>
+            <option value="male">男</option>
+            <option value="female">女</option>
+          </select>
+        </div>
+        <div style="flex:0 0 auto"><button class="btn ghost" onclick="pickOne()">选择图片</button></div>
+        <div style="flex:0 0 auto"><button class="btn" onclick="addOne()">添加</button></div>
+      </div>
+      <input type="file" id="one-file" accept="image/png,image/jpeg" class="hidden">
+      <div class="small muted" style="margin-top:8px" id="one-hint">未选择图片</div>
+    </details>
+
+    <!-- ======================= 人脸库（宫格） ======================= -->
+    <div class="panel">
+      <div class="row" style="align-items:center;justify-content:space-between;margin-bottom:12px">
+        <h2 style="margin:0;flex:0 0 auto">已录入人脸 <span class="muted small" id="count2"></span></h2>
+        <div style="flex:0 0 auto;display:flex;gap:8px">
+          <button class="btn ghost" onclick="loadFaces()">刷新</button>
+          <button class="btn danger" onclick="clearAll()">清空人脸库</button>
+        </div>
+      </div>
+      <div class="cards" id="face-cards"></div>
+      <div class="empty hidden" id="faces-empty">人脸库为空，先在上方拖入图片或上传压缩包录入一批吧</div>
+    </div>
+  </section>
+</div>
+
+<script>
+// ------------------------------------------------------------------ utils
+const $ = (id) => document.getElementById(id);
+let seq = 0;
+let oneBase64 = '';
+
+const GENDER_OPTS = '<option value="unknown">未知</option>' +
+                    '<option value="male">男</option>' +
+                    '<option value="female">女</option>';
+const GENDER_LABEL = { unknown: '未知', male: '男', female: '女' };
+
+function fileNameStem(name) {
+  const slash = Math.max(name.lastIndexOf('/'), name.lastIndexOf('\\'));
+  const base = slash >= 0 ? name.substring(slash + 1) : name;
+  const dot = base.lastIndexOf('.');
+  return dot > 0 ? base.substring(0, dot) : base;
+}
+
+// "title_name" -> [title, name]，按最后一个下划线切分（title 自身可能含下划线）；
+// 另外去掉开头的序号，如 "01张三" / "01工程师_张三"
+function parseTitleName(stem) {
+  let s = stem.replace(/^_+|_+$/g, '');
+  // 去掉开头的序号（后面必须还有非数字、非下划线的字符，避免把 "007" 整个吃掉）
+  const m = s.match(/^(\d+)(?![_\d])(?=.)/);
+  if (m) s = s.substring(m[1].length);
+  const pos = s.lastIndexOf('_');
+  if (pos < 0) return ['', s];
+  return [s.substring(0, pos).trim(), s.substring(pos + 1).trim()];
+}
+
+function isImageFile(f) {
+  const n = (f.name || '').toLowerCase();
+  return n.endsWith('.png') || n.endsWith('.jpg') || n.endsWith('.jpeg');
+}
+
+// 压缩到最长边 1280 的 JPEG，减小上传体积（人脸检测不需要原图分辨率）
+function shrinkImage(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error('read failed'));
+    reader.onload = () => {
+      const img = new Image();
+      img.onerror = () => reject(new Error('decode failed'));
+      img.onload = () => {
+        const maxSide = 1280;
+        let { width: w, height: h } = img;
+        const scale = Math.min(1, maxSide / Math.max(w, h));
+        w = Math.round(w * scale); h = Math.round(h * scale);
+        const canvas = document.createElement('canvas');
+        canvas.width = w; canvas.height = h;
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+        ctx.drawImage(img, 0, 0, w, h);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.92);
+        resolve({ dataUrl, base64: dataUrl.split(',')[1] });
+      };
+      img.src = reader.result;
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function setupDropzone(el, inputEl, onFiles) {
+  el.addEventListener('click', () => inputEl.click());
+  ['dragenter', 'dragover'].forEach((ev) =>
+    el.addEventListener(ev, (e) => { e.preventDefault(); e.stopPropagation(); el.classList.add('dragover'); }));
+  el.addEventListener('dragleave', (e) => { e.preventDefault(); el.classList.remove('dragover'); });
+  el.addEventListener('drop', (e) => {
+    e.preventDefault(); e.stopPropagation();
+    el.classList.remove('dragover');
+    if (e.dataTransfer && e.dataTransfer.files) onFiles(Array.from(e.dataTransfer.files));
+  });
+  inputEl.addEventListener('change', () => {
+    const files = Array.from(inputEl.files || []);
+    if (files.length) onFiles(files);
+    inputEl.value = '';
+  });
+}
+
+function showReport(title, results) {
+  const box = $('report');
+  box.classList.remove('hidden');
+  $('report-head').innerHTML = title;
+  const ul = $('report-list');
+  ul.innerHTML = '';
+  results.filter(r => r.duplicate || !r.success || r.reason || r.similar_name)
+         .slice(0, 300)
+         .forEach((r) => {
+    const li = document.createElement('li');
+    let tag, color;
+    if (r.needs_confirm) { tag = '待人工确认（未入库）'; color = 'var(--warn)'; }
+    else if (r.duplicate) { tag = '重复，已跳过'; color = 'var(--warn)'; }
+    else if (!r.success) { tag = '失败'; color = 'var(--err)'; }
+    else { tag = '成功'; color = 'var(--ok)'; }
+    let extra = '';
+    if (r.reason) extra += ' <span class="muted">(' + r.reason + ')</span>';
+    if (r.similar_name) {
+      extra += ' <span style="color:var(--warn)">疑似与库中「' + r.similar_name + '」同一人</span>';
+    }
+    li.innerHTML = '<b>' + (r.file || r.name || '') + '</b> — ' +
+      '<span style="color:' + color + '">' + tag + '</span>' + extra;
+    ul.appendChild(li);
+  });
+}
+
+// ------------------------------------------------------------------ 单张新增
+function pickOne() { $('one-file').click(); }
+$('one-file').addEventListener('change', async () => {
+  const f = $('one-file').files[0];
+  if (!f) return;
+  const out = await shrinkImage(f);
+  oneBase64 = out.base64;
+  $('one-hint').textContent = '已选择：' + f.name;
+});
+async function addOne() {
+  const name = $('one-name').value.trim();
+  if (!name) { alert('请填写姓名'); return; }
+  const body = new URLSearchParams();
+  body.set('name', name);
+  body.set('title', $('one-title').value);
+  body.set('scene', $('one-scene').value);
+  body.set('map_location', $('one-map').value);
+  body.set('gender', $('one-gender').value);
+  if (oneBase64) body.set('image_data', oneBase64);
+  const j = await fetch('/api/faces/add', { method: 'POST', body }).then(r => r.json());
+  if (j.needs_confirm) {
+    addPendingFromResults([{
+      needs_confirm: true, token: j.token, file: '手动上传',
+      name: $('one-name').value, title: $('one-title').value, scene: $('one-scene').value,
+      match_id: j.match_id, similar_name: j.similar_name,
+      match_scene: j.match_scene, same_scene: j.same_scene, similarity: j.similarity,
+    }]);
+    alert('与库中「' + (j.similar_name || '?') + '」相似度 ' +
+          (j.similarity || 0) + '，已放入「待确认入库」，需你选择处理方式后才会写入');
+  } else {
+    alert(j.message || (j.success ? '已添加' : '添加失败'));
+  }
+  oneBase64 = ''; $('one-hint').textContent = '未选择图片';
+  loadFaces();
+}
+
+// ------------------------------------------------------------------ 压缩包导入
+let archiveFile = null;
+setupDropzone($('drop-archive'), $('file-archive'), (files) => {
+  archiveFile = files.find(f => /\.(zip|tar|gz|tgz)$/i.test(f.name)) || files[0];
+  $('ar-hint').textContent = '已选择：' + archiveFile.name;
+  $('btn-archive').disabled = false;
+});
+
+async function submitArchive() {
+  if (!archiveFile) return;
+  const btn = $('btn-archive');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> 解析并提取特征…';
+  try {
+    const fd = new FormData();
+    fd.append('archive', archiveFile, archiveFile.name);
+    fd.append('scene', $('ar-scene').value);
+    fd.append('map_location', $('ar-map').value);
+    fd.append('gender', $('ar-gender').value);
+    const j = await fetch('/api/faces/import-archive', { method: 'POST', body: fd }).then(r => r.json());
+    if (j.message && !j.results) { alert(j.message); return; }
+    showReport('压缩包导入：共 ' + j.total + ' 项，成功 ' + j.succeeded +
+               '，失败 ' + j.failed + '，重复跳过 ' + j.duplicates +
+               '，待确认 ' + j.pending + '，忽略 ' + j.skipped, j.results || []);
+    addPendingFromResults(j.results);
+    archiveFile = null;
+    $('ar-hint').textContent = '未选择压缩包';
+    loadFaces();
+  } catch (e) {
+    alert('导入失败：' + e.message);
+  } finally {
+    btn.innerHTML = '导入压缩包';
+  }
+}
+
+// ------------------------------------------------------------------ 图片批量 + 宫格
+const items = [];
+
+async function addImageFiles(files) {
+  const images = files.filter(isImageFile);
+  if (!images.length) { alert('只支持 png / jpg 图片'); return; }
+  $('img-hint').innerHTML = '<span class="spinner"></span> 正在读取 ' + images.length + ' 张图片…';
+  for (const f of images) {
+    let payload;
+    try { payload = await shrinkImage(f); }
+    catch (e) { console.warn('skip', f.name, e); continue; }
+    const [title, name] = parseTitleName(fileNameStem(f.name));
+    items.push({
+      key: ++seq,
+      file: f.name,
+      name: name,
+      title: title,
+      scene: 'default',
+      map_location: 'unknown',
+      gender: 'unknown',
+      preview: payload.dataUrl,
+      base64: payload.base64,
+      status: 'pending',
+      reason: '',
+      selected: false,
+    });
+  }
+  $('img-hint').textContent = '已加入 ' + items.length + ' 张图片';
+  renderCards();
+}
+
+setupDropzone($('drop-images'), $('file-images'), addImageFiles);
+
+function renderCards() {
+  const box = $('cards');
+  $('editor').classList.toggle('hidden', items.length === 0);
+  $('cards-empty').classList.toggle('hidden', items.length > 0);
+  $('editor-count').textContent = '（共 ' + items.length + ' 张）';
+  box.innerHTML = '';
+  items.forEach((it) => {
+    const card = document.createElement('div');
+    card.className = 'card' +
+      (it.status === 'done' ? ' done' : it.status === 'failed' ? ' failed'
+                            : it.status === 'duplicate' ? ' dup' : '');
+    card.innerHTML =
+      '<img class="thumb" alt="">' +
+      '<div class="body">' +
+        '<div class="fname" title="' + it.file.replace(/"/g, '') + '"></div>' +
+        '<div class="zip">' +
+          '<div><label class="fld">姓名</label><input type="text" class="f-name"></div>' +
+          '<div><label class="fld">职位</label><input type="text" class="f-title"></div>' +
+        '</div>' +
+        '<div class="zip">' +
+          '<div><label class="fld">场景</label><input type="text" class="f-scene"></div>' +
+          '<div><label class="fld">位置</label><input type="text" class="f-map"></div>' +
+        '</div>' +
+        '<div class="zip">' +
+          '<div><label class="fld">性别</label><select class="f-gender">' + GENDER_OPTS + '</select></div>' +
+        '</div>' +
+        '<div class="foot">' +
+          '<label class="chk"><input type="checkbox" class="f-sel"> 选中</label>' +
+          '<span class="status ' + it.status + '"></span>' +
+        '</div>' +
+        '<div class="foot">' +
+          '<button class="linkbtn danger f-del">删除</button>' +
+        '</div>' +
+      '</div>';
+
+    card.querySelector('.thumb').src = it.preview;
+    card.querySelector('.fname').textContent = it.file;
+    const q = (sel) => card.querySelector(sel);
+    q('.f-name').value = it.name;
+    q('.f-title').value = it.title;
+    q('.f-scene').value = it.scene;
+    q('.f-map').value = it.map_location;
+    q('.f-gender').value = it.gender;
+    q('.f-sel').checked = it.selected;
+
+    q('.f-name').addEventListener('input', e => { it.name = e.target.value; });
+    q('.f-title').addEventListener('input', e => { it.title = e.target.value; });
+    q('.f-scene').addEventListener('input', e => { it.scene = e.target.value; });
+    q('.f-map').addEventListener('input', e => { it.map_location = e.target.value; });
+    q('.f-gender').addEventListener('change', e => { it.gender = e.target.value; });
+    q('.f-sel').addEventListener('change', e => { it.selected = e.target.checked; });
+    q('.f-del').addEventListener('click', () => {
+      items.splice(items.indexOf(it), 1);
+      renderCards();
+    });
+
+    const st = q('.status');
+    if (it.status === 'done') st.textContent = '已入库';
+    else if (it.status === 'failed') st.textContent = '失败：' + (it.reason || '');
+    else if (it.status === 'duplicate') st.textContent = '重复跳过：' + (it.reason || '');
+    else st.textContent = '待入库';
+
+    box.appendChild(card);
+  });
+}
+
+function applyBulk() {
+  const s = $('bulk-scene').value.trim();
+  const m = $('bulk-map').value.trim();
+  const g = $('bulk-gender').value;
+  if (!s && !m && !g) { alert('请至少填写一项'); return; }
+  items.forEach(it => {
+    if (s) it.scene = s;
+    if (m) it.map_location = m;
+    if (g) it.gender = g;
+  });
+  renderCards();
+}
+
+function reparseNames() {
+  items.forEach(it => {
+    const [title, name] = parseTitleName(fileNameStem(it.file));
+    it.title = title;
+    it.name = name;
+  });
+  renderCards();
+}
+
+function removeSelected() {
+  for (let i = items.length - 1; i >= 0; --i) if (items[i].selected) items.splice(i, 1);
+  renderCards();
+}
+
+function clearItems() {
+  if (!confirm('清空待入库的图片列表？')) return;
+  items.length = 0;
+  renderCards();
+}
+
+async function submitBatch() {
+  if (!items.length) return;
+  if (!items.every(it => it.name.trim())) {
+    alert('存在姓名为空的图片，请补全后再保存');
+    return;
+  }
+  const btn = $('btn-save');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner"></span> 保存并重建特征…';
+  try {
+    const payload = {
+      scene: 'default',
+      map_location: 'unknown',
+      items: items.map(it => ({
+        file: it.file,
+        name: it.name.trim(),
+        title: it.title.trim(),
+        scene: it.scene.trim(),
+        map_location: it.map_location.trim(),
+        gender: it.gender,
+        image_data: it.base64,
+      })),
+    };
+    const j = await fetch('/api/faces/import-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    }).then(r => r.json());
+
+    if (j.message && !j.results) { alert(j.message); return; }
+    (j.results || []).forEach((r, i) => {
+      if (!items[i]) return;
+      items[i].status = r.duplicate ? 'duplicate' : (r.success ? 'done' : 'failed');
+      items[i].reason = r.reason || '';
+    });
+    showReport('批量保存：共 ' + (j.results || []).length + ' 张，成功 ' + j.succeeded +
+               '，失败 ' + j.failed + '，重复跳过 ' + j.duplicates +
+               '，待确认 ' + j.pending, j.results || []);
+    addPendingFromResults(j.results);
+    renderCards();
+    loadFaces();
+  } catch (e) {
+    alert('保存失败：' + e.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '保存入库并重建特征';
+  }
+}
+
+// ---------------------------- 高相似度：人工确认 ----------------------------
+// pending[] 中的每一项都必须由人工选择 enroll / replace / skip 后才会写库
+let pending = [];
+
+function addPendingFromResults(results) {
+  (results || []).forEach((r) => {
+    if (!r.needs_confirm || !r.token) return;
+    if (pending.some(p => p.token === r.token)) return;
+    pending.push({
+      token: r.token,
+      file: r.file || '',
+      name: r.name || '',
+      title: r.title || '',
+      scene: r.scene || '',
+      match_id: r.match_id || '',
+      match_name: r.similar_name || r.existing_name || '',
+      match_scene: r.match_scene || '',
+      same_scene: !!r.same_scene,
+      similarity: r.similarity || 0,
+      action: 'skip',     // 默认跳过：不选择即不写入
+    });
+  });
+  renderConfirm();
+}
+
+async function refreshPending() {
+  const j = await fetch('/api/faces/pending').then(r => r.json());
+  const known = new Set(pending.map(p => p.token));
+  (j.pending || []).forEach((p) => {
+    if (known.has(p.token)) return;
+    pending.push({
+      token: p.token, file: p.file, name: p.name, title: p.title, scene: p.scene,
+      match_id: p.match_id, match_name: p.match_name, match_scene: p.match_scene,
+      same_scene: p.same_scene, similarity: p.similarity, action: 'skip',
+      allow_replace: p.allow_replace,
+    });
+  });
+  renderConfirm();
+}
+
+function renderConfirm() {
+  const box = $('confirm-cards');
+  $('confirm-panel').classList.toggle('hidden', pending.length === 0);
+  $('confirm-count').textContent = '（' + pending.length + ' 张待决定）';
+  box.innerHTML = '';
+  pending.forEach((p) => {
+    const card = document.createElement('div');
+    card.className = 'card confirm';
+    const pct = (p.similarity * 100).toFixed(1) + '%';
+    card.innerHTML =
+      '<div class="cmp">' +
+        '<div class="cmp-col">' +
+          '<img class="thumb" src="/api/pending/image/' + encodeURIComponent(p.token) + '" alt="">' +
+          '<div class="small muted">本次上传</div>' +
+        '</div>' +
+        '<div class="cmp-mid">' + pct + '</div>' +
+        '<div class="cmp-col">' +
+          '<img class="thumb" src="/api/image/' + encodeURIComponent(p.match_id) + '" alt="">' +
+          '<div class="small muted">库中：' + (p.match_name || '?') + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<div class="body">' +
+        '<div class="pname"></div>' +
+        '<div class="kv"><span class="k">姓名</span><span class="v"></span></div>' +
+        '<div class="kv"><span class="k">场景</span><span class="v"></span></div>' +
+        '<div class="kv"><span class="k">匹配</span><span class="v"></span></div>' +
+        '<div class="acts">' +
+          '<label class="act"><input type="radio" name="act-' + p.token + '" value="enroll"> 入库</label>' +
+          '<label class="act"><input type="radio" name="act-' + p.token + '" value="replace"> 替换</label>' +
+          '<label class="act"><input type="radio" name="act-' + p.token + '" value="skip" checked> 跳过</label>' +
+        '</div>' +
+      '</div>';
+    const vs = card.querySelectorAll('.v');
+    card.querySelector('.pname').textContent = p.file || '(无文件名)';
+    vs[0].textContent = p.name || '—';
+    vs[1].textContent = p.scene || '—';
+    vs[2].textContent = '与「' + (p.match_name || '?') + '」' +
+                        (p.same_scene ? '同场景' : '跨场景（' + (p.match_scene || '?') + '）');
+    card.querySelectorAll('input[type=radio]').forEach((radio) => {
+      if (radio.value === p.action) radio.checked = true;
+      radio.addEventListener('change', () => { p.action = radio.value; });
+    });
+    box.appendChild(card);
+  });
+}
+
+function setAllAction(action) {
+  pending.forEach(p => { p.action = action; });
+  renderConfirm();
+}
+
+async function submitDecisions() {
+  if (!pending.length) return;
+  const decisions = pending.map(p => ({ token: p.token, action: p.action }));
+  const j = await fetch('/api/faces/resolve', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decisions }),
+  }).then(r => r.json());
+  if (j.results) {
+    const done = [];
+    j.results.forEach((r, i) => done.push((pending[i] ? pending[i].file : r.token) +
+      ' → ' + r.action + (r.success ? ' 成功' : ' 失败：' + r.message)));
+    alert('已提交 ' + j.results.length + ' 项\n入库 ' + j.enrolled +
+          ' / 替换 ' + j.replaced + ' / 跳过 ' + j.skipped + ' / 失败 ' + j.failed +
+          '\n\n' + done.join('\n'));
+  } else {
+    alert(j.message || '提交失败');
+  }
+  pending = [];
+  renderConfirm();
+  loadFaces();
+}
+
+// ------------------------------------------------------------------ 人脸库宫格
+function faceCard(f) {
+  const card = document.createElement('div');
+  card.className = 'card';
+  card.innerHTML =
+    '<img class="thumb" alt="">' +
+    '<div class="body">' +
+      '<div class="pname"></div>' +
+      '<div class="prole small muted"></div>' +
+      '<div class="kv"><span class="k">性别</span><span class="v c-gender"></span></div>' +
+      '<div class="kv"><span class="k">场景</span><span class="v c-scene"></span></div>' +
+      '<div class="kv"><span class="k">位置</span><span class="v c-map"></span></div>' +
+      '<div class="foot">' +
+        '<button class="linkbtn e-edit">编辑</button>' +
+        '<button class="linkbtn danger e-del">删除</button>' +
+      '</div>' +
+    '</div>';
+  card.querySelector('.thumb').src = '/api/image/' + encodeURIComponent(f.id);
+  card.querySelector('.pname').textContent = f.name || '(未命名)';
+  card.querySelector('.prole').textContent = f.title || '—';
+  card.querySelector('.c-gender').textContent = GENDER_LABEL[f.gender] || '未知';
+  card.querySelector('.c-scene').textContent = f.scene || '';
+  card.querySelector('.c-map').textContent = f.map_location || '';
+  card.querySelector('.e-del').onclick = () => removeFace(f.id);
+  card.querySelector('.e-edit').onclick = () => editFaceCard(card, f);
+  return card;
+}
+
+// 卡片内原地编辑：只改文字字段；换照片请用上方导入流程（会自动重建特征）
+function editFaceCard(card, f) {
+  const body = card.querySelector('.body');
+  body.innerHTML =
+    '<div class="zip">' +
+      '<div><label class="fld">姓名</label><input type="text" class="e-name"></div>' +
+      '<div><label class="fld">职位</label><input type="text" class="e-title"></div>' +
+    '</div>' +
+    '<div class="zip">' +
+      '<div><label class="fld">场景</label><input type="text" class="e-scene"></div>' +
+      '<div><label class="fld">位置</label><input type="text" class="e-map"></div>' +
+    '</div>' +
+    '<div class="zip">' +
+      '<div><label class="fld">性别</label><select class="e-gender">' + GENDER_OPTS + '</select></div>' +
+    '</div>' +
+    '<div class="foot">' +
+      '<button class="linkbtn e-save">保存</button>' +
+      '<button class="linkbtn e-cancel">取消</button>' +
+    '</div>';
+  body.querySelector('.e-name').value = f.name || '';
+  body.querySelector('.e-title').value = f.title || '';
+  body.querySelector('.e-scene').value = f.scene || '';
+  body.querySelector('.e-map').value = f.map_location || '';
+  body.querySelector('.e-gender').value = f.gender || 'unknown';
+
+  body.querySelector('.e-cancel').onclick = () => loadFaces();
+  body.querySelector('.e-save').onclick = async () => {
+    const body2 = new URLSearchParams();
+    body2.set('id', f.id);
+    body2.set('name', body.querySelector('.e-name').value);
+    body2.set('title', body.querySelector('.e-title').value);
+    body2.set('scene', body.querySelector('.e-scene').value);
+    body2.set('map_location', body.querySelector('.e-map').value);
+    body2.set('gender', body.querySelector('.e-gender').value);
+    const j = await fetch('/api/faces/update', { method: 'POST', body: body2 }).then(r => r.json());
+    if (!j.success) alert(j.message || '保存失败');
+    loadFaces();
+  };
+}
+
+function loadFaces() {
+  fetch('/api/faces').then(r => r.json()).then((j) => {
+    const n = j.count || 0;
+    $('count').textContent = n + ' 条记录';
+    $('count2').textContent = '（' + n + '）';
+    const box = $('face-cards');
+    box.innerHTML = '';
+    $('faces-empty').classList.toggle('hidden', n > 0);
+    (j.faces || []).forEach(f => box.appendChild(faceCard(f)));
+  });
+}
+
+function removeFace(id) {
+  if (!confirm('删除这条人脸记录？')) return;
+  const body = new URLSearchParams();
+  body.set('id', id);
+  fetch('/api/faces/remove', { method: 'POST', body })
+    .then(r => r.json())
+    .then(() => loadFaces());
+}
+
+function clearAll() {
+  if (!confirm('清空全部人脸记录？此操作不可恢复。')) return;
+  fetch('/api/faces/clear', { method: 'POST' })
+    .then(r => r.json())
+    .then(j => { alert('已删除 ' + j.deleted_count + ' 条'); loadFaces(); });
+}
+
+loadFaces();
+refreshPending();
+</script>
+</body>
+</html>

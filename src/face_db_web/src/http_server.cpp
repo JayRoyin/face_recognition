@@ -16,12 +16,11 @@ struct RequestContext {
     bool body_complete;
 };
 }  // namespace
-constexpr size_t kMaxRequestBody = 16 * 1024 * 1024;
 
 HttpServer* HttpServer::instance_ = nullptr;
 
-HttpServer::HttpServer(int port)
-    : port_(port) {}
+HttpServer::HttpServer(int port, std::size_t max_body_bytes)
+    : port_(port), max_body_bytes_(max_body_bytes) {}
 
 HttpServer::~HttpServer() {
     stop();
@@ -102,7 +101,10 @@ enum MHD_Result HttpServer::mhd_handler(void* cls,
     auto* ctx = static_cast<RequestContext*>(*con_cls);
 
     if (*upload_data_size != 0) {
-        if (*upload_data_size > kMaxRequestBody || ctx->body.size() > kMaxRequestBody - *upload_data_size) {
+        const std::size_t cap = instance_->max_body_bytes_;
+        if (*upload_data_size > cap || ctx->body.size() > cap - *upload_data_size) {
+            std::cerr << "[HttpServer] request body exceeds the limit (" << cap
+                      << " bytes), connection dropped" << std::endl;
             delete ctx; *con_cls = nullptr; *upload_data_size = 0;
             return MHD_NO;
         }
@@ -115,8 +117,19 @@ enum MHD_Result HttpServer::mhd_handler(void* cls,
     req.method = method;
     req.url = url;
 
+    // Multipart (bulk import) cannot be parsed without the boundary, which only
+    // exists in Content-Type — so the header has to reach the handlers.
+    if (const char* ct = MHD_lookup_connection_value(connection, MHD_HEADER_KIND,
+                                                     MHD_HTTP_HEADER_CONTENT_TYPE)) {
+        req.headers["content-type"] = ct;
+    }
+    if (const char* cl = MHD_lookup_connection_value(connection, MHD_HEADER_KIND,
+                                                     MHD_HTTP_HEADER_CONTENT_LENGTH)) {
+        req.headers["content-length"] = cl;
+    }
+
     if (!ctx->body.empty()) {
-        req.body = ctx->body;
+        req.body = std::move(ctx->body);
     }
 
     delete ctx;

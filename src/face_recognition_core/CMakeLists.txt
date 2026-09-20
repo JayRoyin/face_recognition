@@ -46,15 +46,15 @@ pkg_check_modules(UUID REQUIRED uuid)
 # OpenCV 4.5 dnn cannot run models with dynamic Reshape outputs.
 # -----------------------------------------------------------------------------
 set(_onnxruntime_inc_candidates
-    /home/qstdc/.local/onnxruntime/include
-    /home/qstdc/anaconda3/pkgs/onnxruntime-cpp-1.16.3-h7b6976b_4_cuda/include/onnxruntime
+    $ENV{HOME}/.local/onnxruntime/include
+    $ENV{HOME}/anaconda3/pkgs/onnxruntime-cpp-1.16.3-h7b6976b_4_cuda/include/onnxruntime
     /opt/onnxruntime/include
     /usr/local/include
     /usr/include)
 
 set(_onnxruntime_lib_candidates
-    /home/qstdc/.local/onnxruntime/lib
-    /home/qstdc/anaconda3/pkgs/onnxruntime-cpp-1.16.3-h7b6976b_4_cuda/lib
+    $ENV{HOME}/.local/onnxruntime/lib
+    $ENV{HOME}/anaconda3/pkgs/onnxruntime-cpp-1.16.3-h7b6976b_4_cuda/lib
     /opt/onnxruntime/lib
     /usr/local/lib
     /usr/lib

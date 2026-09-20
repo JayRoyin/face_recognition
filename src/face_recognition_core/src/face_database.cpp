@@ -58,7 +58,10 @@ public:
                 scene TEXT,
                 map_location TEXT,
                 created_at INTEGER,
-                updated_at INTEGER
+                updated_at INTEGER,
+                gender TEXT DEFAULT 'unknown',
+                image_hash TEXT,
+                uid INTEGER
             )
         )";
 
@@ -96,6 +99,88 @@ public:
             }
         }
         return true;
+    }
+
+    // ------------------------------------------------------- schema upgrade
+    /**
+     * Bring an OLD database file up to the current schema.
+     *
+     * CREATE TABLE IF NOT EXISTS never changes an existing table, so a gallery
+     * created before `gender` / `image_hash` / `uid` existed would silently
+     * keep the old layout and every later INSERT/SELECT naming those columns
+     * would fail. Columns are added by ALTER TABLE, guarded by PRAGMA
+     * table_info, so this is safe to run on every start.
+     */
+    bool ensureColumn(const std::string& table, const std::string& column,
+                      const std::string& declaration) {
+        const std::string pragma = "PRAGMA table_info(" + table + ")";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, pragma.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            std::cerr << "[FaceDatabase] cannot read table_info(" << table << ")\n";
+            return false;
+        }
+        bool exists = false;
+        while (sqlite3_step(stmt) == SQLITE_ROW) {
+            const char* n = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+            if (n && column == n) { exists = true; break; }
+        }
+        sqlite3_finalize(stmt);
+        if (exists) return true;
+
+        const std::string alter =
+            "ALTER TABLE " + table + " ADD COLUMN " + column + " " + declaration;
+        char* errMsg = nullptr;
+        if (sqlite3_exec(db, alter.c_str(), nullptr, nullptr, &errMsg) != SQLITE_OK) {
+            std::cerr << "[FaceDatabase] migration failed: " << alter
+                      << " -> " << (errMsg ? errMsg : "?") << std::endl;
+            sqlite3_free(errMsg);
+            return false;
+        }
+        std::cout << "[FaceDatabase] schema upgraded: added " << table << "." << column
+                  << std::endl;
+        return true;
+    }
+
+    bool execSql(const char* sql) {
+        char* errMsg = nullptr;
+        if (sqlite3_exec(db, sql, nullptr, nullptr, &errMsg) != SQLITE_OK) {
+            std::cerr << "[FaceDatabase] migration step failed: " << sql
+                      << " -> " << (errMsg ? errMsg : "?") << std::endl;
+            sqlite3_free(errMsg);
+            return false;
+        }
+        return true;
+    }
+
+    bool migrate() {
+        // 1. New columns.
+        if (!ensureColumn("faces", "gender", "TEXT DEFAULT 'unknown'")) return false;
+        if (!ensureColumn("faces", "image_hash", "TEXT")) return false;
+        if (!ensureColumn("faces", "uid", "INTEGER")) return false;
+
+        // 2. Backfill uid for rows that predate the column. rowid is already
+        //    unique and monotonic, i.e. the historical insertion order.
+        if (!execSql("UPDATE faces SET uid = rowid WHERE uid IS NULL")) return false;
+
+        // 3. Keep uid maintained by the DATABASE, not by any caller: every
+        //    writer (CLI, web UI, both ROS nodes) shares this file, and a
+        //    per-process counter would collide between them.
+        if (!execSql(
+                "CREATE TRIGGER IF NOT EXISTS faces_uid_ai "
+                "AFTER INSERT ON faces WHEN NEW.uid IS NULL BEGIN "
+                "  UPDATE faces SET uid = (SELECT COALESCE(MAX(uid), 0) + 1 FROM faces) "
+                "  WHERE id = NEW.id; "
+                "END")) return false;
+
+        // 4. Indexes: dedup lookup by hash, and the sort key.
+        if (!execSql("CREATE INDEX IF NOT EXISTS idx_faces_image_hash "
+                     "ON faces(image_hash)")) return false;
+        if (!execSql("CREATE UNIQUE INDEX IF NOT EXISTS idx_faces_uid "
+                     "ON faces(uid)")) return false;
+
+        // 5. Normalise empty gender values to the documented default.
+        return execSql("UPDATE faces SET gender = 'unknown' "
+                       "WHERE gender IS NULL OR gender = ''");
     }
 
     std::string generateId() {
@@ -186,9 +271,12 @@ public:
 
     // --------------------------------------------------------------- faces CRUD
     bool insertFace(const FaceRecord& record) {
+        // `uid` is deliberately absent: the faces_uid_ai trigger assigns it, so
+        // every writer shares one counter no matter which process it runs in.
         const char* sql =
             "INSERT INTO faces (id, name, title, embedding, image_path, scene, "
-            "map_location, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)";
+            "map_location, created_at, updated_at, gender, image_hash) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)";
         sqlite3_stmt* stmt = nullptr;
         if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
             std::cerr << "[FaceDatabase] insertFace prepare failed: "
@@ -205,6 +293,12 @@ public:
         sqlite3_bind_text(stmt, 7, record.map_location.c_str(), -1, SQLITE_TRANSIENT);
         sqlite3_bind_int64(stmt, 8, record.created_at);
         sqlite3_bind_int64(stmt, 9, record.updated_at);
+        sqlite3_bind_text(stmt, 10, record.gender.c_str(), -1, SQLITE_TRANSIENT);
+        if (record.image_hash.empty()) {
+            sqlite3_bind_null(stmt, 11);
+        } else {
+            sqlite3_bind_text(stmt, 11, record.image_hash.c_str(), -1, SQLITE_TRANSIENT);
+        }
 
         const int rc = sqlite3_step(stmt);
         if (rc != SQLITE_DONE) {
@@ -229,32 +323,125 @@ public:
         return ok;
     }
 
+    /**
+     * Read one full row: id, name, title, embedding, image_path, scene,
+     * map_location, created_at, updated_at, gender, image_hash, uid.
+     */
+    static FaceRecord readFaceRow(sqlite3_stmt* stmt) {
+        FaceRecord r;
+        const char* s = nullptr;
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)); r.id    = s ? s : "";
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)); r.name  = s ? s : "";
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2)); r.title = s ? s : "";
+        r.embedding = readEmbedding(stmt, 3);
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)); r.image_path   = s ? s : "";
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5)); r.scene        = s ? s : "";
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6)); r.map_location = s ? s : "";
+        r.created_at = sqlite3_column_int64(stmt, 7);
+        r.updated_at = sqlite3_column_int64(stmt, 8);
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 9));
+        r.gender = (s && *s) ? s : "unknown";
+        s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 10));
+        r.image_hash = s ? s : "";
+        r.uid = sqlite3_column_int64(stmt, 11);
+        return r;
+    }
+
+    static constexpr const char* kFaceSelectCols =
+        "id, name, title, embedding, image_path, scene, map_location, "
+        "created_at, updated_at, gender, image_hash, uid";
+
     std::vector<FaceRecord> getAllFaces() {
         std::vector<FaceRecord> records;
-        const char* sql =
-            "SELECT id, name, title, embedding, image_path, scene, map_location, "
-            "created_at, updated_at FROM faces";
+        // uid is the gallery's stable order (see migrate()): enrolment order,
+        // and it does not move when another front-end writes at the same time.
+        const std::string sql =
+            std::string("SELECT ") + kFaceSelectCols + " FROM faces ORDER BY uid ASC";
         sqlite3_stmt* stmt = nullptr;
-        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
             return records;
         }
 
         while (sqlite3_step(stmt) == SQLITE_ROW) {
-            FaceRecord r;
-            const char* s = nullptr;
-            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 0)); r.id   = s ? s : "";
-            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1)); r.name = s ? s : "";
-            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2)); r.title = s ? s : "";
-            r.embedding  = readEmbedding(stmt, 3);
-            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 4)); r.image_path   = s ? s : "";
-            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 5)); r.scene        = s ? s : "";
-            s = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 6)); r.map_location = s ? s : "";
-            r.created_at = sqlite3_column_int64(stmt, 7);
-            r.updated_at = sqlite3_column_int64(stmt, 8);
-            records.push_back(std::move(r));
+            records.push_back(readFaceRow(stmt));
         }
         sqlite3_finalize(stmt);
         return records;
+    }
+
+    std::shared_ptr<FaceRecord> getFaceById(const std::string& face_id) {
+        const std::string sql =
+            std::string("SELECT ") + kFaceSelectCols + " FROM faces WHERE id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            return nullptr;
+        }
+        sqlite3_bind_text(stmt, 1, face_id.c_str(), -1, SQLITE_TRANSIENT);
+        std::shared_ptr<FaceRecord> out;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            out = std::make_shared<FaceRecord>(readFaceRow(stmt));
+        }
+        sqlite3_finalize(stmt);
+        return out;
+    }
+
+    /** Importer's dedup probe: exact same payload already stored? */
+    std::shared_ptr<FaceRecord> getFaceByImageHash(const std::string& hash) {
+        const std::string sql =
+            std::string("SELECT ") + kFaceSelectCols + " FROM faces WHERE image_hash = ? LIMIT 1";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql.c_str(), -1, &stmt, nullptr) != SQLITE_OK) {
+            return nullptr;
+        }
+        sqlite3_bind_text(stmt, 1, hash.c_str(), -1, SQLITE_TRANSIENT);
+        std::shared_ptr<FaceRecord> out;
+        if (sqlite3_step(stmt) == SQLITE_ROW) {
+            out = std::make_shared<FaceRecord>(readFaceRow(stmt));
+        }
+        sqlite3_finalize(stmt);
+        return out;
+    }
+
+    bool updateFaceMeta(const FaceRecord& record) {
+        const char* sql =
+            "UPDATE faces SET name = ?, title = ?, scene = ?, map_location = ?, "
+            "image_path = ?, updated_at = ?, gender = ?, image_hash = ? WHERE id = ?";
+        sqlite3_stmt* stmt = nullptr;
+        if (sqlite3_prepare_v2(db, sql, -1, &stmt, nullptr) != SQLITE_OK) {
+            std::cerr << "[FaceDatabase] updateFaceMeta prepare failed: "
+                      << sqlite3_errmsg(db) << std::endl;
+            return false;
+        }
+        sqlite3_bind_text(stmt, 1, record.name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 2, record.title.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 3, record.scene.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 4, record.map_location.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_text(stmt, 5, record.image_path.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 6, time(nullptr));
+        sqlite3_bind_text(stmt, 7, record.gender.c_str(), -1, SQLITE_TRANSIENT);
+        if (record.image_hash.empty()) {
+            sqlite3_bind_null(stmt, 8);
+        } else {
+            sqlite3_bind_text(stmt, 8, record.image_hash.c_str(), -1, SQLITE_TRANSIENT);
+        }
+        sqlite3_bind_text(stmt, 9, record.id.c_str(), -1, SQLITE_TRANSIENT);
+
+        const bool executed = (sqlite3_step(stmt) == SQLITE_DONE);
+        const int  changed  = executed ? sqlite3_changes(db) : 0;
+        const std::string dbmsg = sqlite3_errmsg(db);
+        sqlite3_finalize(stmt);
+
+        if (!executed) {
+            std::cerr << "[FaceDatabase] updateFaceMeta failed for id=" << record.id
+                      << ": " << dbmsg << std::endl;
+            return false;
+        }
+        if (changed == 0) {
+            std::cerr << "[FaceDatabase] updateFaceMeta: no face with id=" << record.id
+                      << " (row not found)" << std::endl;
+            return false;
+        }
+        return true;
     }
 
     std::string getImagePath(const std::string& face_id) {
@@ -410,7 +597,7 @@ bool FaceDatabase::initialize(const std::string& db_path, const std::string& fac
     }
     sqlite3_free(pragma_err);
 
-    return pImpl->createTable();
+    return pImpl->createTable() && pImpl->migrate();
 }
 
 std::string FaceDatabase::add_face(const std::string& name,
@@ -418,7 +605,9 @@ std::string FaceDatabase::add_face(const std::string& name,
                                   const std::vector<uint8_t>& image_data,
                                   const std::string& title,
                                   const std::string& scene,
-                                  const std::string& map_location) {
+                                  const std::string& map_location,
+                                  const std::string& gender,
+                                  const std::string& image_hash) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (name.empty()) return "";
 
@@ -429,6 +618,8 @@ std::string FaceDatabase::add_face(const std::string& name,
     record.embedding = embedding;
     record.scene = scene;
     record.map_location = map_location;
+    record.gender = gender.empty() ? "unknown" : gender;
+    record.image_hash = image_hash;
     record.created_at = time(nullptr);
     record.updated_at = time(nullptr);
 
@@ -488,6 +679,39 @@ int FaceDatabase::get_face_count() {
     return static_cast<int>(pImpl->getAllFaces().size());
 }
 
+bool FaceDatabase::update_face(const std::string& face_id,
+                               const std::string& name,
+                               const std::string& title,
+                               const std::string& scene,
+                               const std::string& map_location,
+                               const std::string& image_path,
+                               const std::string& gender,
+                               const std::string& image_hash) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (face_id.empty() || !pImpl->db) return false;
+
+    auto record = pImpl->getFaceById(face_id);
+    if (!record) return false;
+
+    // Empty == "keep what is already stored"; see the header. `name` is NOT NULL
+    // in the schema, so it can never be blanked here.
+    if (!name.empty())          record->name         = name;
+    if (!title.empty())         record->title        = title;
+    if (!scene.empty())         record->scene        = scene;
+    if (!map_location.empty())  record->map_location = map_location;
+    if (!image_path.empty())    record->image_path   = image_path;
+    if (!gender.empty())        record->gender       = gender;
+    if (!image_hash.empty())    record->image_hash   = image_hash;
+
+    return pImpl->updateFaceMeta(*record);
+}
+
+std::shared_ptr<FaceRecord> FaceDatabase::find_by_image_hash(const std::string& image_hash) {
+    std::lock_guard<std::recursive_mutex> lock(mutex_);
+    if (image_hash.empty() || !pImpl->db) return nullptr;
+    return pImpl->getFaceByImageHash(image_hash);
+}
+
 // ---------------------------------------------------------------- templates
 
 bool FaceDatabase::add_template(const std::string& face_id,
@@ -535,6 +759,7 @@ std::vector<MatchCandidate> FaceDatabase::rank_faces(const std::vector<float>& e
         c.face_id = f.id;
         c.name    = f.name;
         c.title   = f.title;
+        c.scene   = f.scene;
         c.template_id = -1;
         if (!f.embedding.empty()) {
             c.similarity = compute_similarity(embedding, f.embedding);

@@ -23,7 +23,7 @@
 ## 1. 前置：模型与数据库
 
 ```bash
-cd ~/Royin_Project/face_recognition
+cd ~/face_recognition
 
 # 下载检测 / 识别模型（必需）
 ./build.sh MODELS

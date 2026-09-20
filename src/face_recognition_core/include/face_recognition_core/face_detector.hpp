@@ -41,6 +41,15 @@ public:
     void setInputSize(int width, int height);
 
     /**
+     * Runtime confidence-threshold override (clamped to 0.01..0.99).
+     *
+     * Lets a caller run a second, more permissive pass for inputs where the
+     * configured threshold produced nothing — without rebuilding the session.
+     */
+    void setConfidenceThreshold(float threshold);
+    float confidenceThreshold() const;
+
+    /**
      * Returns the active backend name for debugging.
      * One of: "retinaface", "yolov8", "unknown".
      */
