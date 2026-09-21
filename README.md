@@ -118,7 +118,7 @@ $APP run --source 0
 
 **Web 端demo显示效果：**
 <div align="center">
-<img src="docs/img/web_import.png" alt="web_import" width="500"/>
+<img src="docs/img/web_import.png" alt="web_import" width="800"/>
 </div>
 
 > Web 端录入时**已完成人脸检测与特征提取**，`embedding` 随记录一起写入数据库，
