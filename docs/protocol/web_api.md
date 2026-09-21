@@ -80,6 +80,7 @@ curl -s http://localhost:8080/api/faces | python3 -m json.tool
       "id": "550e8400-e29b-41d4-a716-446655440000",
       "name": "张三",
       "title": "工程师",
+      "gender": "male",
       "scene": "office",
       "map_location": "5F-A区",
       "image_path": "/data/hhqs_data/face_db/faces/550e8400-....jpg"
@@ -87,6 +88,8 @@ curl -s http://localhost:8080/api/faces | python3 -m json.tool
   ]
 }
 ```
+
+返回顺序固定为 **`uid` 升序**（即入库顺序），与前端宫格展示顺序一致。
 
 | 字段 | 类型 | 说明 |
 |---|---|---|
@@ -216,22 +219,31 @@ curl -X POST http://localhost:8080/api/faces/import-archive \
 {
   "success": true,
   "archive": "公司人脸库.zip",
-  "total": 30, "succeeded": 30, "failed": 0, "skipped": 2,
+  "total": 31, "succeeded": 27, "failed": 1, "duplicates": 1, "pending": 2, "skipped": 2,
   "results": [
-    {"file": "01张三.png", "name": "张三", "title": "",
-     "success": true, "id": "<UUID>", "has_embedding": true, "reason": ""}
+    {"file": "01张三.png", "name": "张三", "title": "", "gender": "male",
+     "success": true, "id": "<UUID>", "has_embedding": true,
+     "duplicate": false, "needs_confirm": false, "token": "",
+     "existing_name": "", "similar_name": "", "match_id": "", "match_scene": "",
+     "same_scene": false, "similarity": 0.0, "reason": ""}
   ]
 }
 ```
 
 | 字段 | 说明 |
 |---|---|
+| `total` | 压缩包内条目总数（含被忽略的） |
+| `succeeded` / `failed` / `duplicates` / `pending` / `skipped` | 五类归属计数，互不重叠 |
 | `skipped` | 非 png/jpg、隐藏文件、`__MACOSX` 等被忽略的条目数 |
 | `duplicates` | 被判定为重复而**跳过**的条目数 |
+| `pending` | **已挂起等待人工确认**的条目数（未写库） |
 | `results[].duplicate` | true 表示该张被当作重复跳过 |
+| `results[].needs_confirm` / `token` | true 表示未写库，用 `token` 调 `/api/faces/resolve` 决定 |
 | `results[].existing_name` | 与之重复的记录姓名 |
-| `results[].similar_name` / `similarity` | 疑似同一人（不同照片）及其余弦相似度 |
-| `results[].reason` | 失败 / 跳过原因（`no face detected` / `too small (…< 80 px)` / `库里已存在…` 等） |
+| `results[].similar_name` / `similarity` | 库中匹配到的人及其余弦相似度 |
+| `results[].match_id` / `match_scene` / `same_scene` | 匹配记录 id、其场景、是否同场景 |
+| `results[].gender` | 实际写入的性别（可能来自自动识别） |
+| `results[].reason` | 失败 / 跳过 / 挂起原因（`no face detected` / `too small (240x240 < 80 px)` / `库里已存在…` / `等待人工确认…`） |
 | `success` | `failed == 0 && succeeded > 0` |
 
 | 情况 | 状态码 |

@@ -90,12 +90,21 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
 .card {
   border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
   background: #fff; display: flex; flex-direction: column; position: relative;
+  cursor: pointer; transition: outline-color .12s;
 }
+/* 选中高亮用 outline 而不是 inset box-shadow：
+   inset 阴影画在子元素之下，会被上半部分的 <img> 盖住，只剩下半部分有描边。 */
+.card.picked { outline: 2px solid var(--brand); outline-offset: -2px; }
+.pickbadge {
+  position: absolute; top: 8px; right: 8px; display: none; z-index: 2;
+  background: var(--brand); color: #fff; font-size: 12px; padding: 2px 8px;
+  border-radius: 999px;
+}
+.card.picked .pickbadge { display: block; }
 .card.done { border-color: #b6e3c6; background: #f6fdf8; }
 .card.failed { border-color: #f3c2c2; background: #fff7f7; }
 .card.dup { border-color: #f0d9a8; background: #fffaf0; }
 .card.pending { border-color: #c7d7fd; background: #f5f8ff; }
-.card.picked { box-shadow: inset 0 0 0 2px #c7d7fd; }
 .card .thumb {
   width: 100%; height: 150px; object-fit: cover; background: #eef1f6; display: block;
 }
@@ -119,7 +128,7 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
 .card .kv .k { color: var(--muted); flex: 0 0 30px; }
 .card .kv .v { word-break: break-all; }
 .card .foot { display: flex; justify-content: space-between; align-items: center; gap: 6px; }
-.chk { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+
 .status { font-size: 12px; }
 .status.ok { color: var(--ok); }
 .status.err { color: var(--err); }
@@ -207,7 +216,8 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
     <div class="panel hidden" id="editor">
       <h2>归档编辑 <span class="muted small" id="editor-count"></span></h2>
       <div class="small muted" style="margin:-6px 0 10px">
-        勾选需要入库的图片，再点「按勾选项重建入库」；未勾选时该按钮不可用。
+        点击图片卡片即选中（再次点击取消），选中后点「按勾选项重建入库」；
+        未选中任何卡片时该按钮不可用。卡片内的输入框照常编辑，不会误触发选中。
         <span id="auto-gender-hint" class="hidden">
           已开启<b>性别自动识别</b>：留空（未知）时由模型预填，请在卡片中核对后修改。
         </span>
@@ -274,6 +284,11 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
           <button class="btn ghost" onclick="loadFaces()">刷新</button>
           <button class="btn danger" onclick="clearAll()">清空人脸库</button>
         </div>
+      </div>
+
+      <div class="small muted" style="margin:-4px 0 10px">
+        点击卡片选中（再次点击取消），可多选后批量改场景 / 性别 / 删除；
+        点击卡片上的按钮或输入框不会触发选中。
       </div>
 
       <div class="toolbar">
@@ -513,6 +528,7 @@ function renderCards() {
     card.className = 'card' + stateClass + (it.selected ? ' picked' : '');
     card.innerHTML =
       '<img class="thumb" alt="">' +
+      '<span class="pickbadge">已选</span>' +
       '<div class="body">' +
         '<div class="fname" title="' + it.file.replace(/"/g, '') + '"></div>' +
         '<div class="zip">' +
@@ -527,10 +543,7 @@ function renderCards() {
           '<div><label class="fld">性别</label><select class="f-gender">' + GENDER_OPTS + '</select></div>' +
         '</div>' +
         '<div class="foot">' +
-          '<label class="chk"><input type="checkbox" class="f-sel"> 选中</label>' +
           '<span class="status ' + it.status + '"></span>' +
-        '</div>' +
-        '<div class="foot">' +
           '<button class="linkbtn danger f-del">删除</button>' +
         '</div>' +
       '</div>';
@@ -543,20 +556,24 @@ function renderCards() {
     q('.f-scene').value = it.scene;
     q('.f-map').value = it.map_location;
     q('.f-gender').value = it.gender;
-    q('.f-sel').checked = it.selected;
 
     q('.f-name').addEventListener('input', e => { it.name = e.target.value; });
     q('.f-title').addEventListener('input', e => { it.title = e.target.value; });
     q('.f-scene').addEventListener('input', e => { it.scene = e.target.value; });
     q('.f-map').addEventListener('input', e => { it.map_location = e.target.value; });
     q('.f-gender').addEventListener('change', e => { it.gender = e.target.value; });
-    q('.f-sel').addEventListener('change', e => {
-      it.selected = e.target.checked;
-      updateToolbar();
-    });
     q('.f-del').addEventListener('click', () => {
       items.splice(items.indexOf(it), 1);
       renderCards();
+    });
+
+    // 整张卡片即勾选热区：再次点击取消。卡片内的输入框 / 下拉 / 按钮
+    // 仍保持各自的原生行为，不会误触发选中。
+    card.addEventListener('click', (e) => {
+      if (e.target.closest('input, select, button, textarea, label, a')) return;
+      it.selected = !it.selected;
+      card.classList.toggle('picked', it.selected);
+      updateToolbar();
     });
 
     const st = q('.status');
@@ -861,10 +878,8 @@ function faceCard(f) {
   card.className = 'card' + (faceSel.has(f.id) ? ' picked' : '');
   card.innerHTML =
     '<img class="thumb" alt="">' +
+    '<span class="pickbadge">已选</span>' +
     '<div class="body">' +
-      '<div class="foot" style="justify-content:flex-start">' +
-        '<label class="chk"><input type="checkbox" class="c-sel"> 选择</label>' +
-      '</div>' +
       '<div class="pname"></div>' +
       '<div class="prole small muted"></div>' +
       '<div class="kv"><span class="k">性别</span><span class="v c-gender"></span></div>' +
@@ -883,13 +898,14 @@ function faceCard(f) {
   card.querySelector('.c-scene').textContent = f.scene || '';
   card.querySelector('.c-map').textContent = f.map_location || '';
 
-  const box = card.querySelector('.c-sel');
-  box.checked = faceSel.has(f.id);
-  box.onchange = () => {
-    if (box.checked) faceSel.add(f.id); else faceSel.delete(f.id);
-    card.classList.toggle('picked', box.checked);
+  // 点击卡片本体切换选中；按钮等交互元素不触发选中；编辑态下不切换
+  card.addEventListener('click', (e) => {
+    if (card.dataset.editing === '1') return;
+    if (e.target.closest('input, select, button, textarea, label, a')) return;
+    if (faceSel.has(f.id)) faceSel.delete(f.id); else faceSel.add(f.id);
+    card.classList.toggle('picked', faceSel.has(f.id));
     updateFaceToolbar();
-  };
+  });
   card.querySelector('.e-del').onclick = () => removeFace(f.id);
   card.querySelector('.e-edit').onclick = () => editFaceCard(card, f);
   card.querySelector('.e-tpl').onclick = () => pickTemplatePhoto(f.id, f.name);
@@ -1007,6 +1023,7 @@ function refreshSceneOptions() {
 // 卡片内原地编辑：只改文字字段；换照片请用上方导入流程（会自动重建特征）
 function editFaceCard(card, f) {
   const body = card.querySelector('.body');
+  card.dataset.editing = '1';  // 编辑期间点击卡片不切换选中
   body.innerHTML =
     '<div class="zip">' +
       '<div><label class="fld">姓名</label><input type="text" class="e-name"></div>' +

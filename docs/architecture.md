@@ -118,13 +118,17 @@ SQLite 文件内两张表（详见 [protocol/database_schema.md](protocol/databa
 
 ## 4. 模块与依赖矩阵
 
-| 模块 | 依赖 core | 依赖 ROS | 依赖 OpenCV | 依赖 ONNX RT | 依赖 SQLite | 依赖 libmicrohttpd |
-|---|---|---|---|---|---|---|
-| `face_recognition_core` | — | ✗ | ✓ | ✓ | ✓ | ✗ |
-| `face_recognition_ros2` | ✓ | ✓ (Humble) | ✓ | ✓ | ✓ | ✓（stream server） |
-| `face_recognition_ros1` | ✓ | ✓ (Noetic) | ✓ | ✓ | ✓ | ✗ |
-| `face_recognition_standalone` | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ |
-| `face_db_web` | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ |
+| 模块 | 依赖 core | 依赖 ROS | 依赖 OpenCV | 依赖 ONNX RT | 依赖 SQLite | 依赖 libmicrohttpd | 依赖 zlib |
+|---|---|---|---|---|---|---|---|
+| `face_recognition_core` | — | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ |
+| `face_recognition_ros2` | ✓ | ✓ (Humble) | ✓ | ✓ | ✓ | ✓（stream server） | ✗ |
+| `face_recognition_ros1` | ✓ | ✓ (Noetic) | ✓ | ✓ | ✓ | ✗ | ✗ |
+| `face_recognition_standalone` | ✓ | ✗ | ✓ | ✓ | ✓ | ✗ | ✗ |
+| `face_db_web` | ✓ | ✗ | ✓ | ✓ | ✓ | ✓ | ✓（zip/tar.gz 导入） |
+
+> `face_db_web` 的 zlib 只用于**在进程内解压导入包**（`.zip` deflate / gzip），
+> 不落临时目录。ONNX Runtime 是随 core 传递的：性别模型会话由 core 的
+> `GenderClassifier` 持有，web 侧不直接链接 ORT。
 
 > `face_recognition_standalone` 是**唯一零 ROS 依赖**的实时识别通路，只需要
 > OpenCV + ONNX Runtime + SQLite3 + pthread。

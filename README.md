@@ -1,5 +1,5 @@
-<!-- <div align="center">
-<img src="docs/img/logo.jpg" alt="项目Logo" width="500"/> -->
+<div align="center">
+<img src="docs/img/royin_logo.png" alt="项目Logo" width="100"/>
 
 # Face Recognition Node
 
@@ -141,7 +141,7 @@ ROS2 启动：`source scripts/setup_env.sh && ros2 launch face_recognition_ros2 
 项目当前**没有独立的单元测试工程**，端到端验证以"**Web 录入 → 实时识别**"这条通路为主：
 
 ```bash
-# ① 在 Web 页面用自己的照片录入一条记录（Name 填你的名字）
+# ① 在 Web 页面拖入自己的照片，核对姓名后点击卡片选中 → 「按勾选项重建入库」
 # ② 启动实时识别，正对摄像头：画面上应显示你的名字与相似度
 $APP run --source 0
 

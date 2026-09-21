@@ -262,13 +262,15 @@ $APP web --port 8080
 ```
 
 ```bash
-# ④ 浏览器打开 http://localhost:8080/ ，在 “Add Face” 表单里传图录入：
-#      · Name（必填）；可选 Title / Scene / Map Location
-#      · “Or Upload” 选择本地照片；也可在 “Image URL” 填图片链接
-#      · 点 “Add Face” → 提示 Face added with embedding 即成功
-#      · 下方 “Face List” 会实时显示该人与缩略图
+# ④ 浏览器打开 http://localhost:8080/ ，用批量导入录入：
+#      · 方式一：拖入 .zip / .tar.gz，包内图片命名 = title_name.png（如 工程师_张三.png）
+#      · 方式二：拖入多张图片 → 「归档编辑」宫格核对/修改 → 点击卡片选中
+#                → 「按勾选项重建入库」
+#      · 相似度 ≥ 0.80 的图片进入「待确认入库」，需人工选择处理方式后才写库
+#      · 下方「已录入人脸」宫格可搜索/筛选/多选批量修改
 #
-#    Web 端在录入时已完成检测与特征提取，embedding 随记录一起写库。
+#    Web 端在录入时即完成检测与特征提取，embedding 随记录一起写库。
+#    单张也可以直接调接口：curl -X POST .../api/faces/add --data-urlencode "name=张三" ...
 
 # ⑤ 另开终端启动实时识别（默认 USB 摄像头 /dev/video0）
 $APP run --source 0

@@ -22,11 +22,23 @@
 │   服务  /face_db/{add,remove,list,clear}                        │
 ├────────────────────────────────────────────────────────────────┤
 │  HTTP 接口                                                      │
-│   face_db_web        :8080   /  /api/faces  /api/image/<id>     │
+│   face_db_web        :8080                                      │
+│     /                       管理页面（宫格：导入/编辑/待确认/库）│
+│     /api/config             服务端启用的可选行为                 │
+│     /api/faces              列表（按 uid 升序）                  │
+│     /api/image/<id>         原图                                 │
+│     /api/faces/pending      待人工确认的入库请求                 │
+│     /api/pending/image/<t>  待确认图片预览                       │
+│     /api/faces/add | update | add-template                      │
+│     /api/faces/remove | clear                                   │
+│     /api/faces/import-archive   压缩包批量导入                   │
+│     /api/faces/import-batch     宫格图片批量导入                 │
+│     /api/faces/resolve          提交人工决定（唯一写入入口）      │
 │   face_stream_server :8090   /  /stream  /latest.jpg  /healthz  │
 ├────────────────────────────────────────────────────────────────┤
 │  存储接口                                                       │
-│   SQLite  table: faces（Web / ROS / standalone 三方共享）        │
+│   SQLite  table: faces / face_templates / metadata              │
+│   （Web / ROS / standalone 三方共享同一文件）                    │
 └────────────────────────────────────────────────────────────────┘
 ```
 

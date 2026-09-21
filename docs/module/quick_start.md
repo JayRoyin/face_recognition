@@ -157,11 +157,14 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 # 终端 A：启动 Web 录入（录入时即完成检测 + 提特征）
 ./install/bin/face_recognition_app web --port 8080
 
-# 浏览器打开 http://localhost:8080/ ，在 “Add Face” 表单传图：
-#   · Name 必填（可另填 Title / Scene / Map Location）
-#   · “Or Upload” 选本地照片，或在 “Image URL” 填图片链接
-#   · 点 “Add Face” → 提示 Face added with embedding
-#   · 下方 Face List 实时显示已录人脸
+# 浏览器打开 http://localhost:8080/ ，两种批量导入方式（单页宫格界面）：
+#   · 方式一：把 .zip / .tar.gz 拖进左侧拖放区
+#             包内图片命名 = title_name.png（如 工程师_张三.png），自动填 职位/姓名
+#   · 方式二：把多张图片直接拖进右侧拖放区 → 「归档编辑」宫格中核对/修改
+#             → 点击卡片选中（蓝框+「已选」）→ 「按勾选项重建入库」
+#   · 相似度 ≥ 0.80 的不会自动写库，会进入「待确认入库」宫格，
+#     由你逐张选择：入库(新增) / 追加为模板 / 替换原记录 / 跳过
+#   · 下方「已录入人脸」宫格支持搜索、按场景/性别筛选、多选批量改/删
 
 # 终端 B：实时识别（与 Web 共享同一个 DB，录完即可识别）
 ./install/bin/face_recognition_app run --source 0 --input-size 320
@@ -171,8 +174,9 @@ roslaunch face_recognition_ros1 face_recognition.launch \
 > 无需再手动传。若画面一直显示 `Unknown`，见
 > [../FAQ/troubleshooting.md](../FAQ/troubleshooting.md) 的 Q17。
 
-**同一个人要补多张照片**（例如不戴眼镜 / 侧脸，提高召回）时用 CLI 的
-`add-template`（Web 页面目前只提供新增 / 删除 / 清空）：
+**同一个人要补多张照片**（例如不戴眼镜 / 侧脸，提高召回）有两种入口：
+Web 端在人脸卡片上点「**加模板**」选照片，或在「待确认入库」里选「追加为模板」；
+也可以用 CLI 的 `add-template`：
 
 ```bash
 APP=./install/bin/face_recognition_app

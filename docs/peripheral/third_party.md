@@ -77,6 +77,7 @@ sqlite3 :memory: "PRAGMA compile_options;" | grep -i rtree
 | ONNX Runtime (C++) | ≥ 1.16 建议 | RetinaFace 推理 | 见 [../setup.md](../setup.md#3-onnx-runtimec-版) |
 | libuuid | — | UUID v4 生成 | `apt install uuid-dev` |
 | libmicrohttpd | — | HTTP / MJPEG 服务 | `apt install libmicrohttpd-dev` |
+| zlib | — | `face_db_web` 进程内解压 `.zip` / `.tar.gz`（批量导入） | `apt install zlib1g-dev` |
 | pthread | — | 线程与互斥 | glibc 自带 |
 | cmake / make / g++ | CMake ≥ 3.10，C++17 | 构建 | `apt install cmake make g++` |
 

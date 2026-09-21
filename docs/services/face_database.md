@@ -24,13 +24,28 @@ public:
                          const std::vector<uint8_t>& image_data = {},
                          const std::string& title        = "",
                          const std::string& scene        = "default",
-                         const std::string& map_location = "unknown");
+                         const std::string& map_location = "unknown",
+                         const std::string& gender       = "unknown",
+                         const std::string& image_hash   = "");
 
     bool remove_face(const std::string& face_id);
     std::shared_ptr<FaceRecord> get_face(const std::string& face_id);
-    std::vector<FaceRecord>     list_faces();
+    std::vector<FaceRecord>     list_faces();   // 按 uid 升序（入库顺序）
     int  clear_all();
     int  get_face_count();
+
+    // 编辑元数据：空串表示"保持原值"（name 为空不会清空 NOT NULL 列）
+    bool update_face(const std::string& face_id,
+                     const std::string& name,
+                     const std::string& title,
+                     const std::string& scene,
+                     const std::string& map_location,
+                     const std::string& image_path = "",
+                     const std::string& gender     = "",
+                     const std::string& image_hash = "");
+
+    // 导入去重探针：按图片内容哈希查已存在记录（无则返回 nullptr）
+    std::shared_ptr<FaceRecord> find_by_image_hash(const std::string& image_hash);
 
     // --- 附加模板（multi-shot）---------------------------------------------
     bool add_template(const std::string& face_id,
@@ -90,11 +105,19 @@ database.initialize("/data/hhqs_data/face_db/faces.db", "/data/hhqs_data/face_db
 
 1. 递归创建 `faces_dir`
 2. 递归创建 `db_path` 的父目录
-3. `sqlite3_open()` 打开（不存在则创建）
-4. `CREATE TABLE IF NOT EXISTS faces (...)`
-5. `CREATE TABLE IF NOT EXISTS face_templates (...)`
+3. `sqlite3_open()` 打开（不存在则创建）+ `busy_timeout(5000)` + `PRAGMA journal_mode=WAL`
+4. `CREATE TABLE IF NOT EXISTS faces / face_templates / metadata`
    + `CREATE INDEX IF NOT EXISTS idx_face_templates_face_id`
-   （老库升级时自动补建，**无需手工迁移**）
+5. **schema 迁移**（`migrate()`，每次启动都会跑，幂等）：
+   - `PRAGMA table_info` 检查后 `ALTER TABLE ADD COLUMN` 补齐
+     `gender` / `image_hash` / `uid`
+   - 老数据 `uid` 按 `rowid` 回填（即历史插入顺序）
+   - 建触发器 `faces_uid_ai`（`AFTER INSERT` 赋 `MAX(uid)+1`）与索引
+     `idx_faces_image_hash`、`idx_faces_uid`
+   - `gender` 的空值归一化为 `unknown`
+
+> 老库升级**无需手工迁移**，启动即自动完成。列与触发器的完整定义见
+> [../protocol/database_schema.md](../protocol/database_schema.md)。
 
 任一步失败返回 `false`（并打印 `Cannot open database: <errmsg>`）。
 

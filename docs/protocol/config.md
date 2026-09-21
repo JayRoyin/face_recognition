@@ -11,7 +11,7 @@
 | ROS2 节点 | `src/face_recognition_ros2/config/params.yaml` | `launch/*.launch.py` | — | `ROS_LOG_DIR` |
 | ROS1 节点 | `src/face_recognition_ros1/config/face_recognition.yaml` | `launch/face_recognition.launch` | — | — |
 | standalone | — | — | 全部参数 | — |
-| face_db_web | — | — | `--port` `--db` `--faces-dir` `--detection-model` `--recognition-model` | `FACE_DETECTION_MODEL` `FACE_RECOGNITION_MODEL` `FACE_DB_WEB_TEMPLATES` |
+| face_db_web | —（`--enroll-policy` 引用的 JSON 除外） | — | 见 [§6](#6-face_db_web-参数) | `FACE_DETECTION_MODEL` `FACE_RECOGNITION_MODEL` `FACE_DB_WEB_TEMPLATES` `FACE_ENROLL_POLICY` `FACE_GENDER_MODEL` `FACE_WEB_BIND` |
 | 构建 | — | — | `./build.sh <TARGET>` | `BUILD_SPATIALITE` `FACE_RECOGNITION_VENDORED_PREFIX` `LD_LIBRARY_PATH` `PKG_CONFIG_PATH` |
 
 ---
@@ -155,25 +155,74 @@ Launch 参数与节点参数同名，直接通过 `<arg>` / `<param>` 传递，�
 
 ## 6. face_db_web 参数
 
-| 参数 | 默认 | 必需 |
-|---|---|---|
-| `--port` | `8080` | 否 |
-| `--db` | — | **是** |
-| `--faces-dir` | — | **是** |
-| `--detection-model` | — | 否 |
-| `--recognition-model` | — | 否 |
-| `--help` / `-h` | — | 否 |
+### 6.1 基础
 
-### 环境变量
+| 参数 | 默认 | 必需 | 说明 |
+|---|---|---|---|
+| `--port` | `8080` | 否 | HTTP 端口（仅监听 `FACE_WEB_BIND`，默认 `127.0.0.1`） |
+| `--db` | — | **是** | SQLite 路径 |
+| `--faces-dir` | — | **是** | 缩略图目录 |
+| `--detection-model` | 自动发现 | 否 | 检测模型 |
+| `--recognition-model` | 自动发现 | 否 | 识别模型 |
+| `--det-threshold` | `0.5` | 否 | 检测置信度；证件照漏检可降到 `0.3`（批量导入还带一次 `0.1` 的补救重试） |
+| `--max-upload-mb` | `512` | 否 | 单请求体上限（批量导入需要） |
+| `--allow-no-embedding` | 关 | 否 | 允许写入无特征的记录（默认 409 拒绝） |
+| `--help` / `-h` | — | 否 | 打印帮助 |
+
+### 6.2 重入库策略（人工确认）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--enroll-policy <path>` | — | 规则 JSON；也可用环境变量 `FACE_ENROLL_POLICY` |
+| `--high-similarity <f>` | `0.80` | ≥ 该相似度进入人工确认（覆盖文件值） |
+| `--auto-cross-scene` | 关 | 命中记录在**其他场景**时不提示直接入库（同场景仍提示） |
+| `--no-confirm` | 关 | **危险**：关闭全部人工确认，启动即打印告警 |
+| `--print-enroll-policy` | — | 打印带注释的规则模板后退出 |
+
+规则文件字段：`high_similarity` / `require_confirmation` / `confirm_on_same_scene` /
+`confirm_on_cross_scene` / `allow_replace` / `scene_rules[<scene>]`（含
+`threshold` / `confirm_required` / `allow_auto_cross_scene` / `allow_replace`）。
+详见 [web_api.md §4.6](web_api.md)。
+
+### 6.3 性别自动识别（可选）
+
+| 参数 | 默认 | 说明 |
+|---|---|---|
+| `--auto-gender` | 关 | 开启后用模型预填**空**的性别字段 |
+| `--gender-model <path>` | 自动发现 `models/genderage.onnx` | 性别模型；也可用 `FACE_GENDER_MODEL` |
+| `--gender-male-index <0\|1>` | `1` | 哪个输出 logit 代表男性；结果整体相反时改 `0` |
+
+> 该模型图内部自带 `Sub(127.5)` + `Mul(1/128)`，输入必须是**原始 0~255 像素**，
+> 且需要**五点对齐**的人脸裁剪；实现细节与准确率见
+> [web_api.md §4.8](web_api.md#48-性别自动识别可选)。
+
+### 6.4 环境变量
 
 | 变量 | 作用 |
 |---|---|
 | `FACE_DETECTION_MODEL` | `--detection-model` 未传时的回退值 |
 | `FACE_RECOGNITION_MODEL` | `--recognition-model` 未传时的回退值 |
 | `FACE_DB_WEB_TEMPLATES` | 覆盖 `index.html` 的模板目录（默认 `./templates`） |
+| `FACE_ENROLL_POLICY` | `--enroll-policy` 未传时的回退值 |
+| `FACE_GENDER_MODEL` | `--gender-model` 未传时的回退值（需配合 `--auto-gender`） |
+| `FACE_WEB_BIND` | 监听地址，默认 `127.0.0.1`；设为 `0.0.0.0` 才对局域网开放 |
 
 > 环境变量回退的**前提是 `--detection-model` 已生效**：`--recognition-model`
-> 只有在 detector 存在时才会被加载。
+> 只有在 detector 存在时才会被加载。（性别/策略文件不受此限制。）
+
+### 6.5 运行期常量（不可通过参数调整）
+
+| 常量 | 值 | 位置 |
+|---|---|---|
+| 触发确认的相似度默认值 | `0.80` | `enroll_policy.hpp` |
+| 特征"疑似同一人"提示阈值 | `0.70` | `face_handler.hpp` `kDefaultSimilarThreshold` |
+| 检测补救重试阈值 | `0.1` | `kRescueDetectionThreshold` |
+| 性别预填置信度下限 | `0.60` | `face_handler.cpp` `guessGender` |
+| 单次批量导入条目上限 | `2000` | `kMaxBatchItems` |
+| 待确认队列容量 / TTL | `500` 条 / `1800` 秒 | `pending_store.hpp` |
+| 压缩包解压上限 | 4000 条目 / 512 MiB / 单文件 64 MiB | `archive_reader.hpp` |
+| 归档编辑分片提交大小 | 20 张/片 | `index.html` |
+| 人脸库分页步长 | 60 张 | `index.html` |
 
 ---
 

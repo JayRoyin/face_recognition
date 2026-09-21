@@ -53,12 +53,12 @@ $APP help
 ## 3. 三步上手
 
 ```bash
-# ① 录入人脸 —— 推荐用 Web 后台传图（可视化、自动检测 + 提取特征）
+# ① 录入人脸 —— 推荐用 Web 后台（可视化、自动检测 + 提取特征、支持批量）
 $APP web --port 8080
 #   浏览器打开 http://localhost:8080/ ：
-#     · 在 “Add Face” 表单填 Name（必填），可选 Title / Scene / Map Location
-#     · “Or Upload” 选本地照片，或在 “Image URL” 填图片链接
-#     · 点 “Add Face” → 提示 Face added with embedding 即成功
+#     · 方式一：拖 .zip / .tar.gz（包内命名 = title_name.png，自动填 职位/姓名）
+#     · 方式二：拖入多张图片 → 宫格中核对/修改 → 点击卡片选中 → 「按勾选项重建入库」
+#     · 相似度 ≥ 0.80 会进入「待确认入库」，需人工选择 入库/追加模板/替换/跳过
 
 # ② 确认库内记录（emb=yes）
 $APP list

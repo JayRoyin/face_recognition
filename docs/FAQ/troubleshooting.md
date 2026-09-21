@@ -507,20 +507,37 @@ $APP backfill --all
 
 ### Q21 Web 后台录入的人脸，识别时永远匹配不到（特征为空）
 
-**现象**
+**现象**（两种，先分清是哪一种）
+
+**A. 录入时就被拒绝**（现在的默认行为）
 
 ```bash
-./install/bin/face_db_web --port 8080 --db /data/hhqs_data/face_db/faces.db --faces-dir /data/hhqs_data/face_db/faces
-# ...
-# Embedding extraction: DISABLED (records will be stored with NULL embedding)
+./install/bin/face_db_web --port 8080 --db ... --faces-dir ...
+# ============================================================
+#  WARNING: embedding extraction is DISABLED
+# ============================================================
+#  ...
+#  Enrolment requests will be REJECTED until this is fixed.
+# ============================================================
+# Embedding extraction: DISABLED (see warning above)
 ```
 
-Web 页面里能看到记录、也能看到缩略图，但 `run` / ROS 节点**怎么也认不出这个人**。
+此时浏览器里录入会得到 **HTTP 409**，提示
+`Refused: no embedding could be extracted (...)`，或批量导入时该张计入"失败"、
+原因写 `detection/recognition models are not loaded`。**这是保护行为**：
+不会产生永远认不出的记录。
+
+**B. 老库里已经存在的空特征记录**
+
+历史版本（在默认拒绝之前）写进的记录，`embedding` 为空：页面里能看到记录、也能
+看到缩略图，但 `run` / ROS 节点**怎么也认不出这个人**。
 
 **原因**
 
-启动时**没有加载检测/识别模型**，`face_db_web` 于是把记录以
-`embedding = NULL` 写入。这种记录**永远无法被匹配**（空向量不参与比对）。
+两种情况都是启动时**没有加载检测/识别模型**：
+
+- 现在会**直接拒绝**这次录入（A），避免继续产生不可用记录；
+- 但**已经存在**的空特征记录不会自己变好，必须重建（B）。
 
 **确认**
 
@@ -707,6 +724,63 @@ $APP run --camera 0 --width 0 --height 0        # 用摄像头自己的默认分
 | 帧率低但日志无 `[WARN]` | 瓶颈在识别侧（每张脸一次 112×112 推理），见 [Q15](#q15-fps-太低) |
 
 详见 [../module/standalone.md §4](../module/standalone.md#41-多摄像头先-cameras再---camera)。
+
+### Q25 批量导入后"少了几个人"：图片没进库
+
+**先看导入报告**。`/api/faces/import-archive` 与 `/api/faces/import-batch` 都会返回
+逐张结果，每张只会有一种归属：
+
+| 归属 | 字段 | 含义与处理 |
+|---|---|---|
+| 成功 | `success=true` | 已入库 |
+| 重复跳过 | `duplicate=true` | 内容哈希/批内同名命中，**属正常**，不是错误 |
+| **待人工确认** | `needs_confirm=true` | 相似度 ≥ 阈值（默认 0.80），**未写库**，需在「待确认入库」宫格选择处理方式 |
+| 失败 | `success=false` + `reason` | 见下表 |
+
+失败原因对照：
+
+| `reason` | 原因 | 处理 |
+|---|---|---|
+| `no face detected` | 检测不到人脸（含低阈值补救重试后仍无） | 换清晰正面照；或启动时 `--det-threshold 0.3` |
+| `too small (WxH < 80 px)` | 人脸框短边 < 80px | 换更大分辨率的照片 |
+| `no landmarks` | 关键点质量不达标（大侧脸等） | 换正面照 |
+| `cannot decode image` | 不是有效 png/jpg | 检查文件本身 |
+| `detection/recognition models are not loaded` | 服务端没加载模型 | 见 [Q21](#q21-web-后台录入的人脸识别时永远匹配不到特征为空) |
+
+> 压缩包导入还会把非 png/jpg、隐藏文件、`__MACOSX/`、`._*` 计入 `skipped`。
+
+### Q26 自动性别识别结果不对 / 想关掉
+
+**现象**：开启了 `--auto-gender`，个别记录性别判反。
+
+**原因**：`genderage.onnx` 是轻量属性模型，在真实证件照上准确率约 83%，
+中性名字/光线差的样本容易错。
+
+**处理**
+
+1. **它就是"预填建议"**：在人脸卡片上点「编辑」直接改即可（不会覆盖你手填的值）；
+2. 若**整体**男女判反了，说明该导出模型的输出顺序不同：
+   改 `--gender-male-index 0` 重启；
+3. 不需要就**不要加 `--auto-gender`**（默认关闭），此时性别全部为 `unknown`，
+   完全由人工填写。
+
+诊断：`GET /api/config` 返回的 `auto_gender` 表示当前是否开启；
+启动日志会打印 `Gender model shape: input dims=[-1x3x96x96] (NCHW) ... outputs: fc1[1x3]`；
+设环境变量 `FACE_GENDER_DEBUG=1` 可打印每次推理的原始输出。
+
+### Q27 同一个人有两张照片：该用「追加为模板」还是「替换原记录」？
+
+| 选择 | 行为 | 适用 |
+|---|---|---|
+| **追加为模板** | 保留原记录与原照片，新照片作为**额外模板（多枪）** | **推荐**：同一人的另一角度 / 戴不戴眼镜 / 不同光照 |
+| 替换原记录 | 用新照片与新特征**覆盖**原记录 | 原照片录错了、或要用新照完全取代旧照 |
+| 入库(新增) | 新增一条**独立**记录 | 确认是**另一个人**（同脸不同人），或就是要把同一个人拆成两条 |
+
+> 匹配时取一个身份下**所有模板的最高分**，因此多枪能显著提升召回
+> （见 [Q22](#q22-戴上眼镜能识别摘掉就认不出而别人戴着眼镜却被认成我)）。
+> 「替换」会把旧模板丢掉，只在确认旧照片质量差时才用。
+
+CLI 等价入口：`face_recognition_app add-template --id <uuid> --image <照片>`。
 
 ---
 
