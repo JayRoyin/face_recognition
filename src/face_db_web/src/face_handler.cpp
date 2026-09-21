@@ -63,6 +63,7 @@ struct ItemReport {
     std::string match_scene;
     bool        same_scene   = false;
     float       similarity   = 0.0f;
+    std::string gender;        // effective gender (after auto-fill)
 };
 
 void appendReport(std::ostringstream& json, const ItemReport& r) {
@@ -80,6 +81,7 @@ void appendReport(std::ostringstream& json, const ItemReport& r) {
          << ",\"match_id\":\"" << jsonEscape(r.match_id) << "\""
          << ",\"match_scene\":\"" << jsonEscape(r.match_scene) << "\""
          << ",\"same_scene\":" << (r.same_scene ? "true" : "false")
+         << ",\"gender\":\"" << jsonEscape(r.gender) << "\""
          << ",\"similarity\":" << (static_cast<int>(r.similarity * 1000) / 1000.0)
          << ",\"reason\":\"" << jsonEscape(r.reason) << "\"}";
 }
@@ -120,12 +122,14 @@ FaceHandler::FaceHandler(std::shared_ptr<face_recognition::FaceDatabase> databas
                          std::shared_ptr<face_recognition::FaceDetector>   detector,
                          std::shared_ptr<face_recognition::FaceRecognizer> recognizer,
                          bool require_embedding,
-                         EnrollPolicy policy)
+                         EnrollPolicy policy,
+                         std::shared_ptr<face_recognition::GenderClassifier> gender)
     : database_(std::move(database)),
       detector_(std::move(detector)),
       recognizer_(std::move(recognizer)),
       require_embedding_(require_embedding),
-      policy_(std::move(policy)) {
+      policy_(std::move(policy)),
+      gender_(std::move(gender)) {
 
     if (const char* env_p = std::getenv("FACE_DB_WEB_TEMPLATES")) {
         templates_dir_ = env_p;
@@ -415,9 +419,22 @@ void FaceHandler::parseTitleName(const std::string& stem, std::string& title,
     name  = trimmed(s.substr(pos + 1));
 }
 
+std::string FaceHandler::guessGender(const cv::Mat& face_crop,
+                                     const std::string& current) const {
+    // An explicit choice always wins; auto-fill only touches "unknown".
+    if (!gender_ || !gender_->ready()) return current;
+    if (!current.empty() && current != "unknown") return current;
+    if (face_crop.empty()) return current;
+
+    auto res = gender_->classify(face_crop);
+    if (res.gender == "unknown" || res.confidence < 0.60f) return current;
+    return res.gender;
+}
+
 bool FaceHandler::extractEmbedding(const std::vector<uint8_t>& image_bytes,
                                    std::vector<float>& embedding,
-                                   std::string& note) {
+                                   std::string& note,
+                                   cv::Mat* face_crop) {
     if (image_bytes.empty()) {
         note = "no image data";
         return false;
@@ -447,6 +464,30 @@ bool FaceHandler::extractEmbedding(const std::vector<uint8_t>& image_bytes,
     if (detections.empty()) {
         note = "no face detected";
         return false;
+    }
+
+    if (face_crop != nullptr) {
+        // Auxiliary heads (gender/age) were trained on 5-point ALIGNED crops.
+        // Feeding them a loose bounding box puts them out of distribution and
+        // their output collapses towards one class, so prefer the same aligned
+        // crop the embedding uses and fall back to the padded box only when
+        // alignment is unavailable.
+        if (recognizer_) {
+            *face_crop = recognizer_->alignedFace(image, detections.front().landmarks);
+        }
+        if (face_crop->empty()) {
+            const auto& bb = detections.front().bbox;
+            int x = static_cast<int>(bb.x);
+            int y = static_cast<int>(bb.y);
+            int w = static_cast<int>(bb.width);
+            int h = static_cast<int>(bb.height);
+            const int dx = w / 6, dy = h / 6;
+            x = std::max(0, x - dx);
+            y = std::max(0, y - dy);
+            w = std::min(image.cols - x, w + 2 * dx);
+            h = std::min(image.rows - y, h + 2 * dy);
+            if (w > 0 && h > 0) *face_crop = image(cv::Rect(x, y, w, h)).clone();
+        }
     }
 
     // Same gate as the single-image route: a bulk import that bypassed it
@@ -513,12 +554,16 @@ FaceHandler::EnrollOutcome FaceHandler::enrollImage(
 
     std::vector<float> embedding;
     std::string note;
-    extractEmbedding(image_bytes, embedding, note);
+    cv::Mat crop;
+    extractEmbedding(image_bytes, embedding, note, &crop);
 
     if (embedding.empty() && require_embedding_) {
         out.reason = note.empty() ? "no embedding" : note;
         return out;
     }
+
+    // Auto-fill the gender when the caller did not say (model is optional).
+    const std::string resolved_gender = guessGender(crop, gender);
 
     // ---- duplicate check (3): same person, different photo ---------------
     //
@@ -555,7 +600,7 @@ FaceHandler::EnrollOutcome FaceHandler::enrollImage(
                     item.title        = title;
                     item.scene        = scene;
                     item.map_location = map_location;
-                    item.gender       = gender.empty() ? "unknown" : gender;
+                    item.gender       = resolved_gender.empty() ? "unknown" : resolved_gender;
                     item.image        = image_bytes;
                     item.image_hash   = hash;
                     item.embedding    = embedding;
@@ -594,7 +639,7 @@ FaceHandler::EnrollOutcome FaceHandler::enrollImage(
         name, embedding, image_bytes, title,
         scene.empty() ? "default" : scene,
         map_location.empty() ? "unknown" : map_location,
-        gender.empty() ? "unknown" : gender,
+        resolved_gender.empty() ? "unknown" : resolved_gender,
         hash);
 
     if (id.empty()) {
@@ -609,6 +654,7 @@ FaceHandler::EnrollOutcome FaceHandler::enrollImage(
     out.ok            = true;
     out.id            = id;
     out.has_embedding = !embedding.empty();
+    out.gender        = resolved_gender;
     if (!out.has_embedding) out.reason = note;  // kept only as a warning
     return out;
 }
@@ -724,6 +770,7 @@ HttpResponse FaceHandler::importArchive(const HttpRequest& req) {
         rep.match_scene   = outcome.match_scene;
         rep.same_scene    = outcome.same_scene;
         rep.similarity    = outcome.similarity;
+        rep.gender        = outcome.gender;
         reports.push_back(std::move(rep));
     }
 
@@ -863,6 +910,7 @@ HttpResponse FaceHandler::importBatch(const HttpRequest& req) {
         rep.match_scene   = outcome.match_scene;
         rep.same_scene    = outcome.same_scene;
         rep.similarity    = outcome.similarity;
+        rep.gender        = outcome.gender;
         reports.push_back(std::move(rep));
     }
 
@@ -1072,7 +1120,7 @@ HttpResponse FaceHandler::resolvePending(const HttpRequest& req) {
         return resp;
     }
 
-    std::size_t enrolled = 0, replaced = 0, skipped = 0, failed = 0;
+    std::size_t enrolled = 0, replaced = 0, templated = 0, skipped = 0, failed = 0;
     std::ostringstream json;
     json << "{\"results\":[";
 
@@ -1108,6 +1156,18 @@ HttpResponse FaceHandler::resolvePending(const HttpRequest& req) {
             ok = !id.empty();
             message = ok ? "已强制入库（新增一条记录）" : "写入失败";
             if (ok) ++enrolled; else ++failed;
+        } else if (action == "template") {
+            // Multi-shot: keep the existing record AND its photo, just add this
+            // embedding as an extra template. Better than "replace" when the
+            // new photo shows the same person from another angle.
+            std::string path;
+            database_->save_image(item->match_id + "-t" +
+                                      std::to_string(database_->template_count(item->match_id) + 1),
+                                  item->image, path);
+            ok = database_->add_template(item->match_id, item->embedding, path);
+            id = item->match_id;
+            message = ok ? "已追加为库中该人的额外模板（多枪）" : "追加模板失败";
+            if (ok) ++templated; else ++failed;
         } else if (action == "replace") {
             if (!policy_.replaceAllowed(item->scene)) {
                 message = "当前场景规则不允许替换库中记录";
@@ -1144,8 +1204,105 @@ HttpResponse FaceHandler::resolvePending(const HttpRequest& req) {
 
     json << "],\"enrolled\":" << enrolled
          << ",\"replaced\":" << replaced
+         << ",\"templated\":" << templated
          << ",\"skipped\":" << skipped
          << ",\"failed\":" << failed << "}";
+    resp.body = json.str();
+    return resp;
+}
+
+HttpResponse FaceHandler::addTemplate(const HttpRequest& req) {
+    HttpResponse resp;
+    resp.content_type = "application/json; charset=utf-8";
+
+    std::string id, image_data_str;
+    auto consume = [](std::string& body, std::string& field) {
+        size_t sep = std::string::npos;
+        for (size_t i = 0; i < body.size(); ++i) {
+            if (body[i] == '&' || body[i] == '\n') { sep = i; break; }
+        }
+        if (sep == std::string::npos) {
+            field = body;
+            body.clear();
+        } else {
+            field = body.substr(0, sep);
+            body.erase(0, sep + 1);
+            if (!body.empty() && body[0] == '\r') body.erase(0, 1);
+        }
+    };
+    std::string body = req.body;
+    while (!body.empty()) {
+        std::string pair;
+        consume(body, pair);
+        const size_t eq = pair.find('=');
+        if (eq == std::string::npos) continue;
+        const std::string key = urlDecode(pair.substr(0, eq));
+        const std::string val = urlDecode(pair.substr(eq + 1));
+        if      (key == "id")         id = val;
+        else if (key == "image_data") image_data_str = val;
+    }
+
+    if (id.empty()) {
+        resp.status_code = 400;
+        resp.body = "{\"success\":false,\"message\":\"id is required\"}";
+        return resp;
+    }
+    auto existing = database_->get_face(id);
+    if (!existing) {
+        resp.status_code = 404;
+        resp.body = "{\"success\":false,\"message\":\"Face not found\"}";
+        return resp;
+    }
+
+    std::vector<uint8_t> bytes;
+    if (!image_data_str.empty()) {
+        const std::string decoded = base64Decode(stripDataUrlPrefix(image_data_str));
+        bytes.assign(decoded.begin(), decoded.end());
+    }
+    if (bytes.empty()) {
+        resp.status_code = 400;
+        resp.body = "{\"success\":false,\"message\":\"image_data is required\"}";
+        return resp;
+    }
+
+    // An extra template must come from the SAME feature space as everything
+    // else in the gallery, so it goes through the shared gate too.
+    std::vector<float> embedding;
+    std::string note;
+    if (!extractEmbedding(bytes, embedding, note)) {
+        resp.status_code = 409;
+        resp.body = "{\"success\":false,\"message\":\"Refused: " + jsonEscape(note) + "\"}";
+        return resp;
+    }
+
+    std::string image_path;
+    database_->save_image(id + "-t" + std::to_string(database_->template_count(id) + 1),
+                          bytes, image_path);
+    const bool ok = database_->add_template(id, embedding, image_path);
+
+    std::ostringstream json;
+    json << "{\"success\":" << (ok ? "true" : "false")
+         << ",\"id\":\"" << jsonEscape(id) << "\""
+         << ",\"templates\":" << database_->template_count(id)
+         << ",\"message\":\"" << jsonEscape(ok ? "已追加为该人的额外模板（多枪）"
+                                               : "追加失败") << "\"}";
+    resp.body = json.str();
+    return resp;
+}
+
+HttpResponse FaceHandler::getConfig(const HttpRequest& req) {
+    (void)req;
+    HttpResponse resp;
+    resp.content_type = "application/json; charset=utf-8";
+    std::ostringstream json;
+    json << "{\"auto_gender\":"
+         << ((gender_ && gender_->ready()) ? "true" : "false")
+         << ",\"high_similarity\":" << policy_.high_similarity
+         << ",\"require_confirmation\":" << (policy_.require_confirmation ? "true" : "false")
+         << ",\"confirm_on_same_scene\":" << (policy_.confirm_on_same_scene ? "true" : "false")
+         << ",\"confirm_on_cross_scene\":" << (policy_.confirm_on_cross_scene ? "true" : "false")
+         << ",\"allow_replace\":" << (policy_.allow_replace ? "true" : "false")
+         << "}";
     resp.body = json.str();
     return resp;
 }

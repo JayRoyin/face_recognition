@@ -32,6 +32,7 @@ struct PolicyOverrides {
 
 const char* kDetName = "det_10g.onnx";
 const char* kRecName = "w600k_r50.onnx";
+const char* kGenderName = "genderage.onnx";
 
 void signalHandler(int signal) {
     std::cout << "Caught signal " << signal << ", shutting down..." << std::endl;
@@ -101,6 +102,13 @@ void printUsage(const char* prog) {
         << "                               asking, even above the threshold\n"
         << "  --print-enroll-policy        Print a documented policy template\n"
         << "\n"
+        << "Gender auto-fill (optional, only fills an EMPTY gender field):\n"
+        << "  --auto-gender                Use genderage.onnx to pre-fill gender\n"
+        << "  --gender-model PATH          Gender/age .onnx (default: auto-discovered)\n"
+        << "  --gender-male-index N        Which output logit means \"male\"\n"
+        << "                               (default: 1; flip to 0 if results look\n"
+        << "                               inverted for your model export)\n"
+        << "\n"
         << "  --help                       Show this help\n"
         << "\n"
         << "Embedding extraction is enabled automatically when both models can be\n"
@@ -122,6 +130,9 @@ int main(int argc, char* argv[]) {
     std::string enroll_policy_path;
     bool cli_high_similarity_set = false;
     float cli_high_similarity = 0.80f;
+    std::string gender_model;
+    bool auto_gender = false;
+    int  gender_male_index = 1;
 
     for (int i = 1; i < argc; ++i) {
         std::string arg = argv[i];
@@ -150,6 +161,12 @@ int main(int argc, char* argv[]) {
             policy_overrides.auto_cross_scene = true;
         } else if (arg == "--no-confirm") {
             policy_overrides.no_confirm = true;
+        } else if (arg == "--auto-gender") {
+            auto_gender = true;
+        } else if (arg == "--gender-model" && i + 1 < argc) {
+            gender_model = argv[++i];
+        } else if (arg == "--gender-male-index" && i + 1 < argc) {
+            gender_male_index = std::atoi(argv[++i]);
         } else if (arg == "--print-enroll-policy") {
             std::cout << face_db_web::defaultPolicyJson() << std::endl;
             return 0;
@@ -264,7 +281,31 @@ int main(int argc, char* argv[]) {
                       : std::string(" DISABLED"))
               << std::endl;
 
-    face_db_web::FaceHandler handler(database, detector, recognizer, require_embedding, policy);
+    // ---- optional gender auto-fill ----------------------------------------
+    std::shared_ptr<face_recognition::GenderClassifier> gender_clf;
+    if (auto_gender) {
+        if (gender_model.empty()) {
+            if (const char* e = std::getenv("FACE_GENDER_MODEL")) gender_model = e;
+        }
+        if (gender_model.empty()) gender_model = discover_model(kGenderName);
+        if (gender_model.empty()) {
+            std::cerr << "[WARN] --auto-gender: " << kGenderName
+                      << " not found, gender stays 'unknown'\n";
+        } else {
+            gender_clf = std::make_shared<face_recognition::GenderClassifier>();
+            if (!gender_clf->initialize(gender_model, gender_male_index)) {
+                std::cerr << "[WARN] gender model failed to load: "
+                          << gender_clf->getLastError() << "\n";
+                gender_clf.reset();
+            } else {
+                std::cout << "Gender model:       " << gender_model << "\n"
+                          << "Gender model shape: " << gender_clf->shapeInfo() << "\n";
+            }
+        }
+    }
+
+    face_db_web::FaceHandler handler(database, detector, recognizer, require_embedding,
+                                     policy, gender_clf);
 
     // Bulk import posts a whole archive (or a grid of images) in one request,
     // so the body cap has to be much larger than the old fixed 16 MiB.
@@ -278,10 +319,12 @@ int main(int argc, char* argv[]) {
     g_server->post("/api/faces/remove", [&handler](const face_db_web::HttpRequest& req) { return handler.removeFace(req); });
     g_server->post("/api/faces/clear", [&handler](const face_db_web::HttpRequest& req) { return handler.clearFaces(req); });
     g_server->post("/api/faces/update", [&handler](const face_db_web::HttpRequest& req) { return handler.updateFace(req); });
+    g_server->post("/api/faces/add-template", [&handler](const face_db_web::HttpRequest& req) { return handler.addTemplate(req); });
     g_server->post("/api/faces/import-batch", [&handler](const face_db_web::HttpRequest& req) { return handler.importBatch(req); });
     g_server->post("/api/faces/import-archive", [&handler](const face_db_web::HttpRequest& req) { return handler.importArchive(req); });
     g_server->post("/api/faces/resolve", [&handler](const face_db_web::HttpRequest& req) { return handler.resolvePending(req); });
     g_server->get("/api/faces/pending", [&handler](const face_db_web::HttpRequest& req) { return handler.listPending(req); });
+    g_server->get("/api/config", [&handler](const face_db_web::HttpRequest& req) { return handler.getConfig(req); });
     g_server->get("/api/pending/image/", [&handler](const face_db_web::HttpRequest& req) { return handler.pendingImage(req); });
     g_server->get("/api/image/", [&handler](const face_db_web::HttpRequest& req) { return handler.getImage(req); });
 

@@ -69,6 +69,17 @@ public:
 
     /** Enable/disable landmark alignment (enabled by default). */
     void setAlignmentEnabled(bool enabled);
+
+    /**
+     * The 5-point aligned face crop used internally by extract_embedding()
+     * (112x112), so auxiliary models can be fed the SAME geometry they were
+     * trained on instead of a loose bounding box (which is out-of-distribution
+     * and degrades e.g. the gender/age head).
+     *
+     * @return empty cv::Mat when alignment is disabled or the landmarks do not
+     *         pass the same quality checks the embedding uses.
+     */
+    cv::Mat alignedFace(const cv::Mat& image, const std::vector<float>& landmarks);
     bool alignmentEnabled() const;
 
     /** Diagnostics: how many crops used alignment vs the bbox fallback. */

@@ -9,6 +9,9 @@
 #include "face_recognition_core/face_database.hpp"
 #include "face_recognition_core/face_detector.hpp"
 #include "face_recognition_core/face_recognizer.hpp"
+#include "face_recognition_core/gender_classifier.hpp"
+
+#include <opencv2/core.hpp>
 
 #include <cstddef>
 #include <memory>
@@ -24,7 +27,8 @@ public:
                 std::shared_ptr<face_recognition::FaceDetector>   detector   = nullptr,
                 std::shared_ptr<face_recognition::FaceRecognizer> recognizer = nullptr,
                 bool require_embedding = false,
-                EnrollPolicy policy = EnrollPolicy{});
+                EnrollPolicy policy = EnrollPolicy{},
+                std::shared_ptr<face_recognition::GenderClassifier> gender = nullptr);
 
     HttpResponse index(const HttpRequest& req);
     HttpResponse listFaces(const HttpRequest& req);
@@ -39,7 +43,15 @@ public:
     HttpResponse importBatch(const HttpRequest& req);
     /** POST /api/faces/update — edit metadata and/or rebuild the embedding. */
     HttpResponse updateFace(const HttpRequest& req);
+    /**
+     * POST /api/faces/add-template — append ANOTHER photo of an existing
+     * person as an extra template (multi-shot), instead of replacing the
+     * primary embedding.
+     */
+    HttpResponse addTemplate(const HttpRequest& req);
 
+    /** GET /api/config — which optional behaviours are active (UI hints). */
+    HttpResponse getConfig(const HttpRequest& req);
     /** GET /api/faces/pending — enrolments waiting for a human decision. */
     HttpResponse listPending(const HttpRequest& req);
     /** GET /api/pending/image/<token> — preview of a staged upload. */
@@ -60,6 +72,8 @@ private:
         bool        duplicate      = false;
         std::string id;
         std::string reason;  // empty when ok
+        /** Effective gender after the auto-fill (may be the caller's value). */
+        std::string gender;
         /** Set when the image was recognised as an already-stored one. */
         std::string existing_id;
         std::string existing_name;
@@ -113,7 +127,15 @@ private:
      */
     bool extractEmbedding(const std::vector<uint8_t>& image_bytes,
                           std::vector<float>& embedding,
-                          std::string& note);
+                          std::string& note,
+                          cv::Mat* face_crop = nullptr);
+
+    /**
+     * Fill `gender` from the gender model when the upload did not carry one.
+     * Never overrides an explicit value, and stays "unknown" on low confidence
+     * or when the model is unavailable.
+     */
+    std::string guessGender(const cv::Mat& face_crop, const std::string& current) const;
 
     /**
      * @param file_key  basename used for the within-request name check ("" to skip)
@@ -154,6 +176,7 @@ private:
     std::string templates_dir_;
     EnrollPolicy policy_;
     PendingStore pending_;
+    std::shared_ptr<face_recognition::GenderClassifier> gender_;
     // When true, an enrolment that yields no embedding is rejected instead of
     // silently creating a record the recognizer can never match.
     bool require_embedding_ = false;

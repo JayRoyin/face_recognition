@@ -60,6 +60,11 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
 .btn.danger { background: var(--err); }
 .btn.danger:hover { background: #b91c1c; }
 .btn:disabled { opacity: .55; cursor: not-allowed; }
+/* 按钮定宽：勾选/取消勾选时不改变尺寸，避免点击位移 */
+.btn { min-width: 104px; }
+#btn-save { min-width: 168px; }
+#btn-selall, #btn-archive { min-width: 128px; }
+.toolbar .btn { white-space: nowrap; }
 .row { display: flex; gap: 10px; align-items: flex-end; flex-wrap: wrap; }
 .row > div { flex: 1 1 140px; }
 
@@ -89,6 +94,8 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
 .card.done { border-color: #b6e3c6; background: #f6fdf8; }
 .card.failed { border-color: #f3c2c2; background: #fff7f7; }
 .card.dup { border-color: #f0d9a8; background: #fffaf0; }
+.card.pending { border-color: #c7d7fd; background: #f5f8ff; }
+.card.picked { box-shadow: inset 0 0 0 2px #c7d7fd; }
 .card .thumb {
   width: 100%; height: 150px; object-fit: cover; background: #eef1f6; display: block;
 }
@@ -199,6 +206,12 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
     <!-- 宫格编辑器 -->
     <div class="panel hidden" id="editor">
       <h2>归档编辑 <span class="muted small" id="editor-count"></span></h2>
+      <div class="small muted" style="margin:-6px 0 10px">
+        勾选需要入库的图片，再点「按勾选项重建入库」；未勾选时该按钮不可用。
+        <span id="auto-gender-hint" class="hidden">
+          已开启<b>性别自动识别</b>：留空（未知）时由模型预填，请在卡片中核对后修改。
+        </span>
+      </div>
       <div class="toolbar">
         <div style="flex:1 1 150px">
           <label class="fld">批量填充 scene</label>
@@ -219,9 +232,11 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
         </div>
         <div style="flex:0 0 auto"><button class="btn ghost" onclick="applyBulk()">应用到全部</button></div>
         <div style="flex:0 0 auto"><button class="btn ghost" onclick="reparseNames()">按文件名重新解析</button></div>
+        <div style="flex:0 0 auto"><button class="btn ghost" id="btn-selall" onclick="toggleSelectAll()">全选</button></div>
         <div style="flex:0 0 auto"><button class="btn ghost" onclick="removeSelected()">删除选中</button></div>
-        <div style="flex:0 0 auto"><button class="btn ghost" onclick="clearItems()">清空</button></div>
-        <div style="flex:0 0 auto"><button class="btn" id="btn-save" onclick="submitBatch()">保存入库并重建特征</button></div>
+        <div style="flex:0 0 auto">
+          <button class="btn" id="btn-save" onclick="submitBatch()" disabled>按勾选项重建入库</button>
+        </div>
       </div>
       <div class="cards" id="cards"></div>
       <div class="empty hidden" id="cards-empty">还没有图片，先在上方拖入一些吧</div>
@@ -251,28 +266,6 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
       <div class="cards" id="confirm-cards"></div>
     </div>
 
-    <!-- ======================= 新增单张（折叠） ======================= -->
-    <details class="panel">
-      <summary class="summary">新增单张（手动录入）</summary>
-      <div class="row" style="margin-top:12px">
-        <div><label class="fld">姓名 name</label><input type="text" id="one-name" placeholder="张三"></div>
-        <div><label class="fld">职位 title</label><input type="text" id="one-title" placeholder="工程师"></div>
-        <div><label class="fld">场景 scene</label><input type="text" id="one-scene" value="default"></div>
-        <div><label class="fld">位置 map_location</label><input type="text" id="one-map" value="unknown"></div>
-        <div><label class="fld">性别 gender</label>
-          <select id="one-gender">
-            <option value="unknown">未知</option>
-            <option value="male">男</option>
-            <option value="female">女</option>
-          </select>
-        </div>
-        <div style="flex:0 0 auto"><button class="btn ghost" onclick="pickOne()">选择图片</button></div>
-        <div style="flex:0 0 auto"><button class="btn" onclick="addOne()">添加</button></div>
-      </div>
-      <input type="file" id="one-file" accept="image/png,image/jpeg" class="hidden">
-      <div class="small muted" style="margin-top:8px" id="one-hint">未选择图片</div>
-    </details>
-
     <!-- ======================= 人脸库（宫格） ======================= -->
     <div class="panel">
       <div class="row" style="align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -282,8 +275,55 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
           <button class="btn danger" onclick="clearAll()">清空人脸库</button>
         </div>
       </div>
+
+      <div class="toolbar">
+        <div style="flex:1 1 180px">
+          <label class="fld">搜索（姓名 / 职位）</label>
+          <input type="text" id="face-q" placeholder="输入关键字过滤">
+        </div>
+        <div style="flex:0 0 130px">
+          <label class="fld">场景</label>
+          <select id="face-scene"><option value="">全部</option></select>
+        </div>
+        <div style="flex:0 0 110px">
+          <label class="fld">性别</label>
+          <select id="face-gender">
+            <option value="">全部</option>
+            <option value="male">男</option>
+            <option value="female">女</option>
+            <option value="unknown">未知</option>
+          </select>
+        </div>
+        <div style="flex:1 1 140px">
+          <label class="fld">批量设场景</label>
+          <input type="text" id="face-bulk-scene" placeholder="留空不改">
+        </div>
+        <div style="flex:0 0 110px">
+          <label class="fld">批量设性别</label>
+          <select id="face-bulk-gender">
+            <option value="">不改</option>
+            <option value="male">男</option>
+            <option value="female">女</option>
+            <option value="unknown">未知</option>
+          </select>
+        </div>
+        <div style="flex:0 0 auto">
+          <button class="btn ghost" id="btn-face-apply" onclick="applyToSelectedFaces()" disabled>应用到选中</button>
+        </div>
+        <div style="flex:0 0 auto">
+          <button class="btn ghost" id="btn-face-selall" onclick="toggleSelectAllFaces()">全选</button>
+        </div>
+        <div style="flex:0 0 auto">
+          <button class="btn danger" id="btn-face-del" onclick="batchDeleteFaces()" disabled>批量删除</button>
+        </div>
+      </div>
+
       <div class="cards" id="face-cards"></div>
       <div class="empty hidden" id="faces-empty">人脸库为空，先在上方拖入图片或上传压缩包录入一批吧</div>
+      <div class="row hidden" id="faces-more" style="justify-content:center;margin-top:14px">
+        <div style="flex:0 0 auto"><button class="btn ghost" onclick="showMoreFaces()">加载更多</button></div>
+      </div>
+      <input type="file" id="tpl-file" accept="image/png,image/jpeg" class="hidden">
     </div>
   </section>
 </div>
@@ -292,7 +332,6 @@ label.fld { display: block; font-size: 12px; color: var(--muted); margin: 0 0 4p
 // ------------------------------------------------------------------ utils
 const $ = (id) => document.getElementById(id);
 let seq = 0;
-let oneBase64 = '';
 
 const GENDER_OPTS = '<option value="unknown">未知</option>' +
                     '<option value="male">男</option>' +
@@ -393,42 +432,6 @@ function showReport(title, results) {
   });
 }
 
-// ------------------------------------------------------------------ 单张新增
-function pickOne() { $('one-file').click(); }
-$('one-file').addEventListener('change', async () => {
-  const f = $('one-file').files[0];
-  if (!f) return;
-  const out = await shrinkImage(f);
-  oneBase64 = out.base64;
-  $('one-hint').textContent = '已选择：' + f.name;
-});
-async function addOne() {
-  const name = $('one-name').value.trim();
-  if (!name) { alert('请填写姓名'); return; }
-  const body = new URLSearchParams();
-  body.set('name', name);
-  body.set('title', $('one-title').value);
-  body.set('scene', $('one-scene').value);
-  body.set('map_location', $('one-map').value);
-  body.set('gender', $('one-gender').value);
-  if (oneBase64) body.set('image_data', oneBase64);
-  const j = await fetch('/api/faces/add', { method: 'POST', body }).then(r => r.json());
-  if (j.needs_confirm) {
-    addPendingFromResults([{
-      needs_confirm: true, token: j.token, file: '手动上传',
-      name: $('one-name').value, title: $('one-title').value, scene: $('one-scene').value,
-      match_id: j.match_id, similar_name: j.similar_name,
-      match_scene: j.match_scene, same_scene: j.same_scene, similarity: j.similarity,
-    }]);
-    alert('与库中「' + (j.similar_name || '?') + '」相似度 ' +
-          (j.similarity || 0) + '，已放入「待确认入库」，需你选择处理方式后才会写入');
-  } else {
-    alert(j.message || (j.success ? '已添加' : '添加失败'));
-  }
-  oneBase64 = ''; $('one-hint').textContent = '未选择图片';
-  loadFaces();
-}
-
 // ------------------------------------------------------------------ 压缩包导入
 let archiveFile = null;
 setupDropzone($('drop-archive'), $('file-archive'), (files) => {
@@ -505,9 +508,9 @@ function renderCards() {
   box.innerHTML = '';
   items.forEach((it) => {
     const card = document.createElement('div');
-    card.className = 'card' +
-      (it.status === 'done' ? ' done' : it.status === 'failed' ? ' failed'
-                            : it.status === 'duplicate' ? ' dup' : '');
+    const stateClass = it.status === 'done' ? ' done' : it.status === 'failed' ? ' failed'
+                     : it.status === 'duplicate' ? ' dup' : it.status === 'pending' ? ' pending' : '';
+    card.className = 'card' + stateClass + (it.selected ? ' picked' : '');
     card.innerHTML =
       '<img class="thumb" alt="">' +
       '<div class="body">' +
@@ -547,7 +550,10 @@ function renderCards() {
     q('.f-scene').addEventListener('input', e => { it.scene = e.target.value; });
     q('.f-map').addEventListener('input', e => { it.map_location = e.target.value; });
     q('.f-gender').addEventListener('change', e => { it.gender = e.target.value; });
-    q('.f-sel').addEventListener('change', e => { it.selected = e.target.checked; });
+    q('.f-sel').addEventListener('change', e => {
+      it.selected = e.target.checked;
+      updateToolbar();
+    });
     q('.f-del').addEventListener('click', () => {
       items.splice(items.indexOf(it), 1);
       renderCards();
@@ -557,10 +563,32 @@ function renderCards() {
     if (it.status === 'done') st.textContent = '已入库';
     else if (it.status === 'failed') st.textContent = '失败：' + (it.reason || '');
     else if (it.status === 'duplicate') st.textContent = '重复跳过：' + (it.reason || '');
+    else if (it.status === 'pending') st.textContent = '待人工确认（见下方）';
     else st.textContent = '待入库';
 
     box.appendChild(card);
   });
+  updateToolbar();
+}
+
+// 勾选状态驱动工具栏：没有勾选项时"入库"按钮置灰，避免误触全量提交
+function selectedItems() { return items.filter(it => it.selected); }
+
+function updateToolbar() {
+  const n = selectedItems().length;
+  const btn = $('btn-save');
+  // 数量只显示在标题里：按钮文案保持定长，避免勾选时按钮宽度变化导致误点
+  btn.disabled = (n === 0);
+  btn.textContent = '按勾选项重建入库';
+  $('btn-selall').textContent = (items.length && n === items.length) ? '取消全选' : '全选';
+  $('editor-count').textContent =
+    '（共 ' + items.length + ' 张，已勾选 ' + n + ' 张）';
+}
+
+function toggleSelectAll() {
+  const all = items.length > 0 && selectedItems().length === items.length;
+  items.forEach(it => { it.selected = !all; });
+  renderCards();
 }
 
 function applyBulk() {
@@ -597,51 +625,84 @@ function clearItems() {
 }
 
 async function submitBatch() {
-  if (!items.length) return;
-  if (!items.every(it => it.name.trim())) {
-    alert('存在姓名为空的图片，请补全后再保存');
+  const batch = selectedItems();
+  if (!batch.length) return;
+  const blank = batch.filter(it => !it.name.trim());
+  if (blank.length) {
+    alert('勾选的图片中有 ' + blank.length + ' 张姓名为空，请补全后再入库');
     return;
   }
   const btn = $('btn-save');
   btn.disabled = true;
-  btn.innerHTML = '<span class="spinner"></span> 保存并重建特征…';
+  btn.innerHTML = '<span class="spinner"></span> 按勾选项重建入库…';
   try {
-    const payload = {
-      scene: 'default',
-      map_location: 'unknown',
-      items: items.map(it => ({
-        file: it.file,
-        name: it.name.trim(),
-        title: it.title.trim(),
-        scene: it.scene.trim(),
-        map_location: it.map_location.trim(),
-        gender: it.gender,
-        image_data: it.base64,
-      })),
-    };
-    const j = await fetch('/api/faces/import-batch', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    }).then(r => r.json());
+    // 分片提交：每片 20 张。整批一次 POST 时任何网络抖动都会让整批白跑，
+    // 分片后已完成的片不会重来，还能给出真实的 n/N 进度。
+    const CHUNK = 20;
+    const totals = { succeeded: 0, failed: 0, duplicates: 0, pending: 0 };
+    const allResults = [];
+    let processed = 0;
 
-    if (j.message && !j.results) { alert(j.message); return; }
-    (j.results || []).forEach((r, i) => {
-      if (!items[i]) return;
-      items[i].status = r.duplicate ? 'duplicate' : (r.success ? 'done' : 'failed');
-      items[i].reason = r.reason || '';
-    });
-    showReport('批量保存：共 ' + (j.results || []).length + ' 张，成功 ' + j.succeeded +
-               '，失败 ' + j.failed + '，重复跳过 ' + j.duplicates +
-               '，待确认 ' + j.pending, j.results || []);
-    addPendingFromResults(j.results);
+    for (let start = 0; start < batch.length; start += CHUNK) {
+      const slice = batch.slice(start, start + CHUNK);
+      const payload = {
+        scene: 'default',
+        map_location: 'unknown',
+        items: slice.map(it => ({
+          file: it.file,
+          name: it.name.trim(),
+          title: it.title.trim(),
+          scene: it.scene.trim(),
+          map_location: it.map_location.trim(),
+          gender: it.gender,
+          image_data: it.base64,
+        })),
+      };
+      const j = await fetch('/api/faces/import-batch', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      }).then(r => r.json());
+
+      if (j.message && !j.results) {
+        alert('第 ' + (start + 1) + ' 张起提交失败：' + j.message);
+        break;
+      }
+      totals.succeeded  += j.succeeded  || 0;
+      totals.failed     += j.failed     || 0;
+      totals.duplicates += j.duplicates || 0;
+      totals.pending    += j.pending    || 0;
+
+      (j.results || []).forEach((r, i) => {
+        const it = slice[i];
+        if (it) {
+          it.status = r.duplicate ? 'duplicate'
+                    : r.needs_confirm ? 'pending'
+                    : (r.success ? 'done' : 'failed');
+          it.reason = r.reason || '';
+          if (r.gender) it.gender = r.gender;   // 后端自动识别结果回填到卡片
+        }
+        allResults.push(r);
+      });
+      processed += slice.length;
+      btn.innerHTML = '<span class="spinner"></span> 已处理 ' + processed + '/' + batch.length;
+    }
+
+    showReport('按勾选项入库：共 ' + allResults.length + ' 张，成功 ' + totals.succeeded +
+               '，失败 ' + totals.failed + '，重复跳过 ' + totals.duplicates +
+               '，待确认 ' + totals.pending, allResults);
+    addPendingFromResults(allResults);
+
+    // 入库成功的从待办宫格移除；失败/重复/待确认的留在原处便于处理
+    for (let i = items.length - 1; i >= 0; --i) {
+      if (items[i].status === 'done') items.splice(i, 1);
+    }
     renderCards();
     loadFaces();
   } catch (e) {
     alert('保存失败：' + e.message);
   } finally {
-    btn.disabled = false;
-    btn.innerHTML = '保存入库并重建特征';
+    updateToolbar();
   }
 }
 
@@ -712,8 +773,9 @@ function renderConfirm() {
         '<div class="kv"><span class="k">场景</span><span class="v"></span></div>' +
         '<div class="kv"><span class="k">匹配</span><span class="v"></span></div>' +
         '<div class="acts">' +
-          '<label class="act"><input type="radio" name="act-' + p.token + '" value="enroll"> 入库</label>' +
-          '<label class="act"><input type="radio" name="act-' + p.token + '" value="replace"> 替换</label>' +
+          '<label class="act"><input type="radio" name="act-' + p.token + '" value="enroll"> 入库(新增)</label>' +
+          '<label class="act"><input type="radio" name="act-' + p.token + '" value="template"> 追加为模板</label>' +
+          '<label class="act"><input type="radio" name="act-' + p.token + '" value="replace"> 替换原记录</label>' +
           '<label class="act"><input type="radio" name="act-' + p.token + '" value="skip" checked> 跳过</label>' +
         '</div>' +
       '</div>';
@@ -749,23 +811,60 @@ async function submitDecisions() {
     j.results.forEach((r, i) => done.push((pending[i] ? pending[i].file : r.token) +
       ' → ' + r.action + (r.success ? ' 成功' : ' 失败：' + r.message)));
     alert('已提交 ' + j.results.length + ' 项\n入库 ' + j.enrolled +
-          ' / 替换 ' + j.replaced + ' / 跳过 ' + j.skipped + ' / 失败 ' + j.failed +
+          ' / 追加模板 ' + (j.templated || 0) + ' / 替换 ' + j.replaced +
+          ' / 跳过 ' + j.skipped + ' / 失败 ' + j.failed +
           '\n\n' + done.join('\n'));
   } else {
     alert(j.message || '提交失败');
   }
   pending = [];
   renderConfirm();
+  // 已做决定的图片从待办宫格移除
+  for (let i = items.length - 1; i >= 0; --i) {
+    if (items[i].status === 'pending') items.splice(i, 1);
+  }
+  renderCards();
   loadFaces();
 }
 
 // ------------------------------------------------------------------ 人脸库宫格
+let allFaces = [];              // 全量数据（一次拉取）
+let faceSel = new Set();        // 勾选的记录 id
+let faceLimit = 60;             // 「加载更多」分页步长
+
+function filteredFaces() {
+  const q = $('face-q').value.trim().toLowerCase();
+  const scene = $('face-scene').value;
+  const gender = $('face-gender').value;
+  return allFaces.filter((f) => {
+    if (scene && (f.scene || '') !== scene) return false;
+    if (gender && (f.gender || 'unknown') !== gender) return false;
+    if (q) {
+      const hay = ((f.name || '') + ' ' + (f.title || '')).toLowerCase();
+      if (!hay.includes(q)) return false;
+    }
+    return true;
+  });
+}
+
+function updateFaceToolbar() {
+  const n = faceSel.size;
+  $('btn-face-del').disabled = (n === 0);
+  $('btn-face-apply').disabled = (n === 0);
+  const shown = filteredFaces();
+  $('btn-face-selall').textContent =
+    (shown.length && shown.every(f => faceSel.has(f.id))) ? '取消全选' : '全选';
+}
+
 function faceCard(f) {
   const card = document.createElement('div');
-  card.className = 'card';
+  card.className = 'card' + (faceSel.has(f.id) ? ' picked' : '');
   card.innerHTML =
     '<img class="thumb" alt="">' +
     '<div class="body">' +
+      '<div class="foot" style="justify-content:flex-start">' +
+        '<label class="chk"><input type="checkbox" class="c-sel"> 选择</label>' +
+      '</div>' +
       '<div class="pname"></div>' +
       '<div class="prole small muted"></div>' +
       '<div class="kv"><span class="k">性别</span><span class="v c-gender"></span></div>' +
@@ -773,6 +872,7 @@ function faceCard(f) {
       '<div class="kv"><span class="k">位置</span><span class="v c-map"></span></div>' +
       '<div class="foot">' +
         '<button class="linkbtn e-edit">编辑</button>' +
+        '<button class="linkbtn e-tpl">加模板</button>' +
         '<button class="linkbtn danger e-del">删除</button>' +
       '</div>' +
     '</div>';
@@ -782,10 +882,127 @@ function faceCard(f) {
   card.querySelector('.c-gender').textContent = GENDER_LABEL[f.gender] || '未知';
   card.querySelector('.c-scene').textContent = f.scene || '';
   card.querySelector('.c-map').textContent = f.map_location || '';
+
+  const box = card.querySelector('.c-sel');
+  box.checked = faceSel.has(f.id);
+  box.onchange = () => {
+    if (box.checked) faceSel.add(f.id); else faceSel.delete(f.id);
+    card.classList.toggle('picked', box.checked);
+    updateFaceToolbar();
+  };
   card.querySelector('.e-del').onclick = () => removeFace(f.id);
   card.querySelector('.e-edit').onclick = () => editFaceCard(card, f);
+  card.querySelector('.e-tpl').onclick = () => pickTemplatePhoto(f.id, f.name);
   return card;
 }
+
+// ---- 追加模板（多枪）：同一个人的另一张照片，不覆盖原特征 ----
+let templateTarget = '';
+function pickTemplatePhoto(id, name) {
+  templateTarget = id;
+  $('tpl-file').onclick = null;
+  $('tpl-file').dataset.name = name || '';
+  $('tpl-file').click();
+}
+
+async function onTemplateFileChosen() {
+  const file = $('tpl-file').files[0];
+  $('tpl-file').value = '';
+  if (!file || !templateTarget) return;
+  const out = await shrinkImage(file);
+  const body = new URLSearchParams();
+  body.set('id', templateTarget);
+  body.set('image_data', out.base64);
+  const j = await fetch('/api/faces/add-template', { method: 'POST', body }).then(r => r.json());
+  alert(j.message || (j.success ? '已追加' : '追加失败'));
+  templateTarget = '';
+  loadFaces();
+}
+$('tpl-file').addEventListener('change', onTemplateFileChosen);
+
+function toggleSelectAllFaces() {
+  const shown = filteredFaces();
+  const all = shown.length > 0 && shown.every(f => faceSel.has(f.id));
+  shown.forEach(f => { if (all) faceSel.delete(f.id); else faceSel.add(f.id); });
+  renderFaceCards();
+}
+
+async function applyToSelectedFaces() {
+  const scene = $('face-bulk-scene').value.trim();
+  const gender = $('face-bulk-gender').value;
+  if (!scene && !gender) { alert('请先填写要批量设置的场景或性别'); return; }
+  if (!faceSel.size) return;
+  if (!confirm('将对选中的 ' + faceSel.size + ' 条记录批量设置？')) return;
+
+  let ok = 0, fail = 0;
+  for (const id of faceSel) {
+    const body = new URLSearchParams();
+    body.set('id', id);
+    if (scene) body.set('scene', scene);
+    if (gender) body.set('gender', gender);
+    try {
+      const j = await fetch('/api/faces/update', { method: 'POST', body }).then(r => r.json());
+      j.success ? ++ok : ++fail;
+    } catch (e) { ++fail; }
+  }
+  alert('批量设置完成：成功 ' + ok + '，失败 ' + fail);
+  faceSel.clear();
+  $('face-bulk-scene').value = '';
+  $('face-bulk-gender').value = '';
+  loadFaces();
+}
+
+async function batchDeleteFaces() {
+  if (!faceSel.size) return;
+  if (!confirm('删除选中的 ' + faceSel.size + ' 条记录？此操作不可恢复。')) return;
+  let ok = 0, fail = 0;
+  for (const id of faceSel) {
+    const body = new URLSearchParams();
+    body.set('id', id);
+    try {
+      const j = await fetch('/api/faces/remove', { method: 'POST', body }).then(r => r.json());
+      j.success ? ++ok : ++fail;
+    } catch (e) { ++fail; }
+  }
+  alert('删除完成：成功 ' + ok + '，失败 ' + fail);
+  faceSel.clear();
+  loadFaces();
+}
+
+function renderFaceCards() {
+  const shown = filteredFaces();
+  const box = $('face-cards');
+  box.innerHTML = '';
+  shown.slice(0, faceLimit).forEach(f => box.appendChild(faceCard(f)));
+  $('faces-empty').classList.toggle('hidden', shown.length > 0);
+  if (!shown.length && allFaces.length) {
+    $('faces-empty').textContent = '没有符合筛选条件的人脸记录';
+    $('faces-empty').classList.remove('hidden');
+  } else {
+    $('faces-empty').textContent = '人脸库为空，先在上方拖入图片或上传压缩包录入一批吧';
+  }
+  $('faces-more').classList.toggle('hidden', shown.length <= faceLimit);
+  updateFaceToolbar();
+}
+
+function showMoreFaces() {
+  faceLimit += 60;
+  renderFaceCards();
+}
+
+function refreshSceneOptions() {
+  const sel = $('face-scene');
+  const current = sel.value;
+  const scenes = Array.from(new Set(allFaces.map(f => f.scene || '').filter(Boolean))).sort();
+  sel.innerHTML = '<option value="">全部</option>' +
+    scenes.map(s => '<option value="' + s.replace(/"/g, '') + '">' + s + '</option>').join('');
+  sel.value = scenes.includes(current) ? current : '';
+}
+
+['face-q', 'face-scene', 'face-gender'].forEach((id) => {
+  $(id).addEventListener('input', () => { faceLimit = 60; renderFaceCards(); });
+  $(id).addEventListener('change', () => { faceLimit = 60; renderFaceCards(); });
+});
 
 // 卡片内原地编辑：只改文字字段；换照片请用上方导入流程（会自动重建特征）
 function editFaceCard(card, f) {
@@ -829,18 +1046,21 @@ function editFaceCard(card, f) {
 
 function loadFaces() {
   fetch('/api/faces').then(r => r.json()).then((j) => {
+    allFaces = j.faces || [];
     const n = j.count || 0;
     $('count').textContent = n + ' 条记录';
-    $('count2').textContent = '（' + n + '）';
-    const box = $('face-cards');
-    box.innerHTML = '';
-    $('faces-empty').classList.toggle('hidden', n > 0);
-    (j.faces || []).forEach(f => box.appendChild(faceCard(f)));
+    $('count2').textContent = '（共 ' + n + ' 条）';
+    // 清掉已不存在的勾选，避免批量操作打到已删除的记录
+    const ids = new Set(allFaces.map(f => f.id));
+    faceSel.forEach(id => { if (!ids.has(id)) faceSel.delete(id); });
+    refreshSceneOptions();
+    renderFaceCards();
   });
 }
 
 function removeFace(id) {
   if (!confirm('删除这条人脸记录？')) return;
+  faceSel.delete(id);
   const body = new URLSearchParams();
   body.set('id', id);
   fetch('/api/faces/remove', { method: 'POST', body })
@@ -857,6 +1077,9 @@ function clearAll() {
 
 loadFaces();
 refreshPending();
+fetch('/api/config').then(r => r.json()).then((c) => {
+  if (c.auto_gender) $('auto-gender-hint').classList.remove('hidden');
+}).catch(() => {});
 </script>
 </body>
 </html>

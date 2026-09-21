@@ -142,6 +142,7 @@ set(SOURCES
     src/face_detector.cpp
     src/face_recognizer.cpp
     src/face_database.cpp
+    src/gender_classifier.cpp
 )
 
 add_library(face_recognition_core SHARED ${SOURCES})

@@ -274,6 +274,11 @@ void FaceRecognizer::setInputSize(int width, int height) {
     }
 }
 
+cv::Mat FaceRecognizer::alignedFace(const cv::Mat& image,
+                                    const std::vector<float>& landmarks) {
+    return pImpl->align_crop(image, landmarks);
+}
+
 void FaceRecognizer::setAlignmentEnabled(bool enabled) {
     pImpl->align_enabled = enabled;
 }

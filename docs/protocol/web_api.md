@@ -24,6 +24,8 @@
 | POST | `/api/faces/remove` | `application/json; charset=utf-8` | 删除一条人脸 |
 | POST | `/api/faces/clear` | `application/json; charset=utf-8` | 清空人脸库 |
 | POST | `/api/faces/update` | `application/json; charset=utf-8` | 编辑一条人脸（可选重建特征） |
+| POST | `/api/faces/add-template` | `application/json; charset=utf-8` | 追加为同一人的额外模板（多枪） |
+| GET | `/api/config` | `application/json; charset=utf-8` | 服务端启用了哪些可选行为（前端提示用） |
 | GET | `/api/faces/pending` | `application/json; charset=utf-8` | 待人工确认的入库请求 |
 | GET | `/api/pending/image/<token>` | `image/png` / `image/jpeg` | 待确认图片的预览 |
 | POST | `/api/faces/resolve` | `application/json; charset=utf-8` | **提交人工决定**（唯一写入高相似度人脸的入口） |
@@ -329,8 +331,12 @@ curl -X POST http://localhost:8080/api/faces/import-archive \
 | action | 行为 |
 |---|---|
 | `enroll` | **强制入库**：新增一条独立记录（不影响库中原有记录） |
+| `template` | **追加为模板**：保留原记录与原照片，把这张作为该人的**额外模板（多枪）**，识别时取最高分 |
 | `replace` | **重入库**：用新照片与新特征覆盖匹配到的那条记录（记录数不变） |
 | `skip` | 丢弃本次上传（默认选项：不选就不写） |
+
+> 同一人的第二张照片建议用 `template` 而不是 `replace`：`replace` 会把原特征
+> 覆盖掉，只留下最新一张；`template` 保留多枪，对姿态/光照变化更鲁棒。
 
 ### 接口
 
@@ -419,6 +425,56 @@ curl -X POST http://localhost:8080/api/faces/resolve \
 
 ---
 
+## 4.7 追加模板（多枪）
+
+`POST /api/faces/add-template`：给**已存在**的人再喂一张照片，作为额外模板。
+
+| 字段 | 必需 | 说明 |
+|---|---|---|
+| `id` | 是 | 目标记录 UUID |
+| `image_data` | 是 | base64 照片 |
+
+```bash
+curl -X POST http://localhost:8080/api/faces/add-template \
+     --data-urlencode "id=<UUID>" --data-urlencode "image_data=<BASE64>"
+```
+
+```json
+{"success":true,"id":"<UUID>","templates":2,"message":"已追加为该人的额外模板（多枪）"}
+```
+
+- 同样走 `make_embedding()` 质量闸门：提不出特征时返回 **409**，不会写入半成品模板
+- `templates` = 该人当前模板总数（含主模板），匹配时取所有模板的最高分
+- 前端入口：人脸卡片上的「加模板」按钮；待确认卡片里的「追加为模板」选项
+
+---
+
+## 4.8 性别自动识别（可选）
+
+用 `models/genderage.onnx` 在导入时**预填**性别，仅当调用方填的是
+`unknown` 时才生效，人工可随时修改。
+
+```bash
+face_db_web ... --auto-gender                # 开启
+              --gender-model <path>          # 默认自动发现 models/genderage.onnx
+              --gender-male-index 0|1        # 默认 1，结果整体相反时改 0
+```
+
+`GET /api/config` 会返回 `auto_gender`，前端据此提示"性别自动识别已开启"。
+
+**实现要点（踩过的坑）**：该模型的图内部自带 `Sub(127.5)` + `Mul(1/128)`
+（两个常量在 .onnx initializer 里紧邻），因此输入必须是**原始 0~255 像素**。
+若按常见做法再归一化一次，等于双重归一化，激活值塌缩，输出会变成对任何人
+都几乎相同的 `[-v, +v, age]`，表现为"所有人都判成同一类"却不报任何错。
+另外它训练用的是 **5 点对齐人脸**，喂松散 bbox 裁剪同样会退化，所以这里复用了
+识别器的对齐结果（`FaceRecognizer::alignedFace`）。
+
+**准确率**：在 30 张真实证件照上约 83%（明显偏向女性名/男性名的样本均判对，
+中性名偶有误判）。因此它只作为**预填建议**——库里的值始终可编辑，且不会覆盖
+任何显式传入的性别。
+
+---
+
 ## 5. POST /api/faces/remove
 
 | 字段 | 必需 | 说明 |
@@ -461,7 +517,24 @@ curl -X POST http://localhost:8080/api/faces/clear
 内置页面（`templates/index.html`，可用环境变量 `FACE_DB_WEB_TEMPLATES` 覆盖目录，
 未找到时使用编译期内嵌副本）分为两个标签页：
 
-**人脸库**：列表 / 行内编辑（调 `/api/faces/update`）/ 删除 / 单张新增。
+**人脸库**（宫格）：
+
+- **搜索**：按姓名 / 职位关键字实时过滤
+- **筛选**：场景下拉（从库内数据自动生成）+ 性别下拉
+- **分页**：默认渲染 60 张，「加载更多」每次 +60（避免几百张时一次性渲染卡顿）
+- **多选批量**：卡片勾选 → 批量设场景 / 批量设性别 / 批量删除（逐个调
+  `/api/faces/update`、`/api/faces/remove`）
+- **加模板**：卡片上的「加模板」按钮，选一张该人的照片调
+  `/api/faces/add-template`，不覆盖原特征
+- 单条编辑（调 `/api/faces/update`）/ 删除
+
+**归档编辑**：
+
+- 勾选需要入库的图片，点「按勾选项重建入库」；**未勾选时按钮置灰**，
+  已勾选数量显示在标题（不在按钮上，避免按钮宽度变化导致误点）
+- 提交按 **20 张一片**分片进行，按钮实时显示 `已处理 n/N`：
+  整批一次提交时任何网络抖动都会让整批白跑，分片后已完成的不会重来
+- 性别留空时，若服务端开了 `--auto-gender` 会用模型预填并回填到卡片
 
 **批量导入**：
 
