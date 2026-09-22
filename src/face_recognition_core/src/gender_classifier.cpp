@@ -33,7 +33,9 @@ public:
     bool loaded = false;
 
     bool load(const std::string& model_path, int male_idx) {
-        male_index = male_idx;
+        // Only 0 and 1 are meaningful; anything else would make `winner ==
+        // male_index` never true and silently label every face "female".
+        male_index = (male_idx == 0) ? 0 : 1;
         try {
             ort_env = std::make_unique<Ort::Env>(ORT_LOGGING_LEVEL_ERROR, "genderage");
             Ort::SessionOptions opts;

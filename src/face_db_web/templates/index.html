@@ -421,10 +421,13 @@ function setupDropzone(el, inputEl, onFiles) {
   });
 }
 
+// 报告里的 file / reason / name 都来自用户数据（压缩包内文件名、库中姓名），
+// 必须用 textContent 组装，不能拼 innerHTML——否则一个叫 <img onerror> 的
+// 文件名就能在管理页里执行脚本。
 function showReport(title, results) {
   const box = $('report');
   box.classList.remove('hidden');
-  $('report-head').innerHTML = title;
+  $('report-head').textContent = title;
   const ul = $('report-list');
   ul.innerHTML = '';
   results.filter(r => r.duplicate || !r.success || r.reason || r.similar_name)
@@ -436,13 +439,29 @@ function showReport(title, results) {
     else if (r.duplicate) { tag = '重复，已跳过'; color = 'var(--warn)'; }
     else if (!r.success) { tag = '失败'; color = 'var(--err)'; }
     else { tag = '成功'; color = 'var(--ok)'; }
-    let extra = '';
-    if (r.reason) extra += ' <span class="muted">(' + r.reason + ')</span>';
-    if (r.similar_name) {
-      extra += ' <span style="color:var(--warn)">疑似与库中「' + r.similar_name + '」同一人</span>';
+
+    const name = document.createElement('b');
+    name.textContent = r.file || r.name || '';
+    li.appendChild(name);
+    li.appendChild(document.createTextNode(' — '));
+
+    const state = document.createElement('span');
+    state.style.color = color;
+    state.textContent = tag;
+    li.appendChild(state);
+
+    if (r.reason) {
+      const why = document.createElement('span');
+      why.className = 'muted';
+      why.textContent = ' (' + r.reason + ')';
+      li.appendChild(why);
     }
-    li.innerHTML = '<b>' + (r.file || r.name || '') + '</b> — ' +
-      '<span style="color:' + color + '">' + tag + '</span>' + extra;
+    if (r.similar_name) {
+      const sim = document.createElement('span');
+      sim.style.color = 'var(--warn)';
+      sim.textContent = ' 疑似与库中「' + r.similar_name + '」同一人';
+      li.appendChild(sim);
+    }
     ul.appendChild(li);
   });
 }
@@ -530,7 +549,7 @@ function renderCards() {
       '<img class="thumb" alt="">' +
       '<span class="pickbadge">已选</span>' +
       '<div class="body">' +
-        '<div class="fname" title="' + it.file.replace(/"/g, '') + '"></div>' +
+        '<div class="fname"></div>' +
         '<div class="zip">' +
           '<div><label class="fld">姓名</label><input type="text" class="f-name"></div>' +
           '<div><label class="fld">职位</label><input type="text" class="f-title"></div>' +
@@ -550,6 +569,7 @@ function renderCards() {
 
     card.querySelector('.thumb').src = it.preview;
     card.querySelector('.fname').textContent = it.file;
+    card.querySelector('.fname').title = it.file;
     const q = (sel) => card.querySelector(sel);
     q('.f-name').value = it.name;
     q('.f-title').value = it.title;
@@ -781,7 +801,7 @@ function renderConfirm() {
         '<div class="cmp-mid">' + pct + '</div>' +
         '<div class="cmp-col">' +
           '<img class="thumb" src="/api/image/' + encodeURIComponent(p.match_id) + '" alt="">' +
-          '<div class="small muted">库中：' + (p.match_name || '?') + '</div>' +
+          '<div class="small muted">库中：<span class="match-label"></span></div>' +
         '</div>' +
       '</div>' +
       '<div class="body">' +
@@ -798,6 +818,7 @@ function renderConfirm() {
       '</div>';
     const vs = card.querySelectorAll('.v');
     card.querySelector('.pname').textContent = p.file || '(无文件名)';
+    card.querySelector('.match-label').textContent = p.match_name || '?';
     vs[0].textContent = p.name || '—';
     vs[1].textContent = p.scene || '—';
     vs[2].textContent = '与「' + (p.match_name || '?') + '」' +
@@ -1010,8 +1031,18 @@ function refreshSceneOptions() {
   const sel = $('face-scene');
   const current = sel.value;
   const scenes = Array.from(new Set(allFaces.map(f => f.scene || '').filter(Boolean))).sort();
-  sel.innerHTML = '<option value="">全部</option>' +
-    scenes.map(s => '<option value="' + s.replace(/"/g, '') + '">' + s + '</option>').join('');
+  // scene 是用户数据：用 DOM 组装（textContent），避免拼 innerHTML 时被注入
+  sel.innerHTML = '';
+  const all = document.createElement('option');
+  all.value = '';
+  all.textContent = '全部';
+  sel.appendChild(all);
+  scenes.forEach((s) => {
+    const opt = document.createElement('option');
+    opt.value = s;
+    opt.textContent = s;
+    sel.appendChild(opt);
+  });
   sel.value = scenes.includes(current) ? current : '';
 }
 

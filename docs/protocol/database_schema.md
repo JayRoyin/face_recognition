@@ -63,7 +63,7 @@ CREATE INDEX IF NOT EXISTS idx_face_templates_face_id
 | `name` | TEXT | 否 | 姓名；写入时为空会被 `add_face` 拒绝 |
 | `title` | TEXT | 是 | 职位 / 头衔，默认空串 |
 | `embedding` | BLOB | 是 | **512 × float32 = 2048 字节**；为空表示该记录不可识别 |
-| `image_path` | TEXT | 是 | 缩略图**绝对路径**，`<faces_dir>/<id>.jpg` |
+| `image_path` | TEXT | 是 | 缩略图**绝对路径**，`<faces_dir>/<id>.jpg`（**文件名固定 `.jpg`，内容保留上传时的原始格式**，HTTP 取图时按魔数判定 `Content-Type`） |
 | `scene` | TEXT | 是 | 场景标签，默认 `default` |
 | `map_location` | TEXT | 是 | 物理位置，默认 `unknown` |
 | `created_at` | INTEGER | 是 | Unix 时间戳（秒），`time(nullptr)` |
@@ -120,6 +120,9 @@ CREATE INDEX IF NOT EXISTS idx_face_templates_face_id
 ```
 
 - 新增：写入 `<faces_dir>/<id>.jpg`，然后把路径回填 `image_path`
+  （扩展名始终是 `.jpg` 只是命名约定，**字节原样保存**：PNG 上传存的就是 PNG。
+  这样做是为了让 `image_hash` 始终对应"导入的那张图"，代价是文件名不反映真实格式，
+  所以取图接口按魔数而不是扩展名给 `Content-Type`）
 - 删除：`remove_face` / `clear_all` 会**同时**删除文件与记录
 - 图片写入失败**不阻断**入库（`image_path` 留空）
 

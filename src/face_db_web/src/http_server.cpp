@@ -14,6 +14,12 @@ namespace {
 struct RequestContext {
     std::string body;
     bool body_complete;
+    /**
+     * Set once the body exceeds the configured cap. The remaining upload is
+     * drained (not buffered) so the request can finish normally and be
+     * answered with a real 413 instead of a silently dropped connection.
+     */
+    bool too_large = false;
 };
 }  // namespace
 
@@ -102,13 +108,20 @@ enum MHD_Result HttpServer::mhd_handler(void* cls,
 
     if (*upload_data_size != 0) {
         const std::size_t cap = instance_->max_body_bytes_;
-        if (*upload_data_size > cap || ctx->body.size() > cap - *upload_data_size) {
+        if (!ctx->too_large &&
+            (*upload_data_size > cap || ctx->body.size() > cap - *upload_data_size)) {
             std::cerr << "[HttpServer] request body exceeds the limit (" << cap
-                      << " bytes), connection dropped" << std::endl;
-            delete ctx; *con_cls = nullptr; *upload_data_size = 0;
-            return MHD_NO;
+                      << " bytes); freeing what was buffered and answering 413. "
+                         "Raise --max-upload-mb if this is a legitimate import."
+                      << std::endl;
+            ctx->too_large = true;
+            std::string().swap(ctx->body);  // release the memory immediately
         }
-        ctx->body.append(upload_data, *upload_data_size);
+        if (!ctx->too_large) {
+            ctx->body.append(upload_data, *upload_data_size);
+        }
+        // Always consume the chunk: MHD only finishes the request once every
+        // byte has been acknowledged, and we want to send a response.
         *upload_data_size = 0;
         return MHD_YES;
     }
@@ -132,14 +145,27 @@ enum MHD_Result HttpServer::mhd_handler(void* cls,
         req.body = std::move(ctx->body);
     }
 
+    const bool too_large = ctx->too_large;
     delete ctx;
     *con_cls = nullptr;
 
     HttpResponse resp;
     bool handled = false;
 
+    if (too_large) {
+        // Report it instead of resetting the connection: a bare disconnect
+        // reaches the browser/curl as "connection reset", which sends users
+        // hunting for a network problem instead of raising --max-upload-mb.
+        resp.status_code = 413;
+        resp.content_type = "application/json; charset=utf-8";
+        resp.body = "{\"success\":false,\"message\":\"request body exceeds the server "
+                    "limit of " + std::to_string(instance_->max_body_bytes()) +
+                    " bytes; raise --max-upload-mb\"}";
+        handled = true;
+    }
+
     auto method_it = instance_->routes_.find(req.method);
-    if (method_it != instance_->routes_.end()) {
+    if (!handled && method_it != instance_->routes_.end()) {
         for (const auto& [route_path, handler] : method_it->second) {
             bool matched = false;
             if (route_path == req.url) {

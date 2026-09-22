@@ -43,17 +43,33 @@ struct ArchiveEntry {
 
 /** Detect by magic bytes first (a renamed archive is still an archive). */
 ArchiveKind detectArchiveKind(const std::string& filename,
-                              const std::vector<uint8_t>& data);
+                              const std::uint8_t* data, std::size_t size);
 
 /**
- * Decode `data` into `out`. Entries that expand beyond the limits stop the
- * whole read with an error, rather than silently truncating.
+ * Decode the archive at [data, data+size) into `out`.
+ *
+ * Takes a raw pointer rather than a container on purpose: the caller already
+ * holds the uploaded bytes (request body / multipart part), and copying a
+ * multi-hundred-megabyte archive just to pass it here would double the peak
+ * memory of an import.
+ *
+ * Entries that expand beyond the limits stop the whole read with an error,
+ * rather than silently truncating.
  */
-bool readArchive(const std::vector<uint8_t>& data,
+bool readArchive(const std::uint8_t* data, std::size_t size,
                  const std::string& filename,
                  std::vector<ArchiveEntry>& out,
                  std::string& error,
                  const ArchiveLimits& limits = ArchiveLimits{});
+
+/** Convenience overload for callers that already have a buffer. */
+inline bool readArchive(const std::vector<std::uint8_t>& data,
+                        const std::string& filename,
+                        std::vector<ArchiveEntry>& out,
+                        std::string& error,
+                        const ArchiveLimits& limits = ArchiveLimits{}) {
+    return readArchive(data.data(), data.size(), filename, out, error, limits);
+}
 
 }  // namespace face_db_web
 

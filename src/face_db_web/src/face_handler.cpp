@@ -86,6 +86,64 @@ void appendReport(std::ostringstream& json, const ItemReport& r) {
          << ",\"reason\":\"" << jsonEscape(r.reason) << "\"}";
 }
 
+/**
+ * Content-Type derived from the payload's MAGIC BYTES.
+ *
+ * The gallery stores every image as `<faces_dir>/<id>.jpg` (that is the
+ * documented naming convention, see database_schema.md), but the bytes inside
+ * are stored verbatim — a PNG upload stays a PNG so that `image_hash` keeps
+ * identifying the exact photo that was imported. The extension therefore says
+ * nothing about the format, and the response header must come from the
+ * content itself.
+ *
+ * Shared by /api/image/<id> and /api/pending/image/<token> so both endpoints
+ * can never disagree again.
+ */
+std::string sniffImageContentType(const void* data, std::size_t size) {
+    if (data == nullptr || size == 0) return "application/octet-stream";
+    const auto* b = static_cast<const unsigned char*>(data);
+
+    if (size >= 8 && b[0] == 0x89 && b[1] == 'P' && b[2] == 'N' && b[3] == 'G' &&
+        b[4] == 0x0D && b[5] == 0x0A && b[6] == 0x1A && b[7] == 0x0A) {
+        return "image/png";
+    }
+    if (size >= 3 && b[0] == 0xFF && b[1] == 0xD8 && b[2] == 0xFF) return "image/jpeg";
+    if (size >= 12 && std::memcmp(b, "RIFF", 4) == 0 &&
+        std::memcmp(b + 8, "WEBP", 4) == 0) {
+        return "image/webp";
+    }
+    if (size >= 2 && b[0] == 'B' && b[1] == 'M') return "image/bmp";
+    if (size >= 6 && (std::memcmp(b, "GIF87a", 6) == 0 ||
+                      std::memcmp(b, "GIF89a", 6) == 0)) {
+        return "image/gif";
+    }
+    // Unknown: be honest rather than claiming JPEG. Browsers still render it
+    // inside <img> (we do not send X-Content-Type-Options: nosniff).
+    return "application/octet-stream";
+}
+
+/**
+ * RAII restore of the detector's confidence threshold.
+ *
+ * The threshold lives on the (shared) detector, so a rescue pass that lowered
+ * it must put it back — including when detection throws.
+ */
+class ScopedThresholdGuard {
+public:
+    ScopedThresholdGuard(face_recognition::FaceDetector& detector, float temporary)
+        : detector_(&detector), saved_(detector.confidenceThreshold()) {
+        detector_->setConfidenceThreshold(temporary);
+    }
+    ~ScopedThresholdGuard() { detector_->setConfidenceThreshold(saved_); }
+
+    ScopedThresholdGuard(const ScopedThresholdGuard&) = delete;
+    ScopedThresholdGuard& operator=(const ScopedThresholdGuard&) = delete;
+
+private:
+    face_recognition::FaceDetector* detector_;
+    float saved_;
+};
+
 /** Cosine threshold from a request field; falls back on junk input. */
 float parseThreshold(const std::string& raw, float fallback) {
     if (raw.empty()) return fallback;
@@ -454,12 +512,13 @@ bool FaceHandler::extractEmbedding(const std::vector<uint8_t>& image_bytes,
 
     auto detections = detector_->detect(image, 1);
     if (detections.empty()) {
-        // Rescue pass, then restore the operator-configured threshold. The
-        // quality gate below still decides whether the result is usable.
-        const float saved = detector_->confidenceThreshold();
-        detector_->setConfidenceThreshold(kRescueDetectionThreshold);
+        // Rescue pass for curated photos where SCRFD scores a clear face
+        // below the configured threshold. The threshold is a shared setting,
+        // so it MUST be restored even if detection throws — otherwise every
+        // later request would silently run at the permissive threshold.
+        // The quality gate below still decides whether the result is usable.
+        ScopedThresholdGuard guard(*detector_, kRescueDetectionThreshold);
         detections = detector_->detect(image, 1);
-        detector_->setConfidenceThreshold(saved);
     }
     if (detections.empty()) {
         note = "no face detected";
@@ -594,6 +653,19 @@ FaceHandler::EnrollOutcome FaceHandler::enrollImage(
                 }
 
                 if (policy_.needsConfirmation(scene, out.same_scene)) {
+                    // Already parked and still unanswered? A parked upload is
+                    // not in the gallery, so the hash lookup above missed it:
+                    // re-importing the same archive must not queue it twice.
+                    if (!hash.empty()) {
+                        if (auto parked = pending_.findByHash(hash)) {
+                            out.duplicate     = true;
+                            out.existing_name = parked->name;
+                            out.reason = "该图片已在「待确认入库」队列中（" + parked->name +
+                                         "），未重复排队";
+                            return out;
+                        }
+                    }
+
                     PendingEnroll item;
                     item.file         = file_key;
                     item.name         = name;
@@ -674,7 +746,13 @@ HttpResponse FaceHandler::importArchive(const HttpRequest& req) {
     }
 
     const std::string ct = req.header("content-type");
-    std::vector<uint8_t> archive_bytes;
+    // The archive is referenced, never copied: the multipart part is moved out
+    // of the form and its bytes are handed to readArchive directly. Copying a
+    // 300 MB upload two or three times would multiply the peak memory of an
+    // import for no benefit.
+    std::string archive_data;
+    const std::uint8_t* archive_ptr = nullptr;
+    std::size_t archive_len = 0;
     std::string archive_name;
     std::string scene, map_location, gender = "unknown";
     DedupContext dedup;
@@ -688,17 +766,19 @@ HttpResponse FaceHandler::importArchive(const HttpRequest& req) {
                 jsonEscape("cannot parse multipart body: " + form.error()) + "\"}";
             return resp;
         }
-        const MultipartPart* part = form.first("archive");
-        if (!part) part = form.first("file");
-        if (!part || part->data.empty()) {
+        MultipartPart part = form.take("archive");
+        if (part.data.empty()) part = form.take("file");
+        if (part.data.empty()) {
             resp.status_code = 400;
             resp.body =
                 "{\"success\":false,\"message\":\"archive file is missing "
                 "(expected a form field named 'archive')\"}";
             return resp;
         }
-        archive_bytes.assign(part->data.begin(), part->data.end());
-        archive_name = part->filename;
+        archive_data = std::move(part.data);
+        archive_ptr  = reinterpret_cast<const std::uint8_t*>(archive_data.data());
+        archive_len  = archive_data.size();
+        archive_name = part.filename;
         scene        = trimmed(form.value("scene"));
         map_location = trimmed(form.value("map_location"));
         gender       = normaliseGender(form.value("gender"));
@@ -708,12 +788,13 @@ HttpResponse FaceHandler::importArchive(const HttpRequest& req) {
     } else {
         // Raw upload (curl --data-binary): the format comes from the magic
         // bytes, so no file name is needed.
-        archive_bytes.assign(req.body.begin(), req.body.end());
+        archive_ptr = reinterpret_cast<const std::uint8_t*>(req.body.data());
+        archive_len = req.body.size();
     }
 
     std::vector<ArchiveEntry> entries;
     std::string err;
-    if (!readArchive(archive_bytes, archive_name, entries, err)) {
+    if (!readArchive(archive_ptr, archive_len, archive_name, entries, err)) {
         resp.status_code = 400;
         resp.body = "{\"success\":false,\"message\":\"" + jsonEscape(err) + "\"}";
         return resp;
@@ -1055,7 +1136,7 @@ HttpResponse FaceHandler::listPending(const HttpRequest& req) {
     std::ostringstream json;
     json << "{\"count\":" << items.size() << ",\"pending\":[";
     for (std::size_t i = 0; i < items.size(); ++i) {
-        const auto& it = items[i];
+        const PendingEnroll& it = *items[i];
         if (i) json << ",";
         json << "{\"token\":\"" << jsonEscape(it.token) << "\""
              << ",\"file\":\"" << jsonEscape(it.file) << "\""
@@ -1094,10 +1175,7 @@ HttpResponse FaceHandler::pendingImage(const HttpRequest& req) {
         return resp;
     }
     resp.body.assign(item->image.begin(), item->image.end());
-    // PNG payloads are served as PNG; everything else as JPEG.
-    const bool png = item->image.size() > 8 && item->image[0] == 0x89 &&
-                     item->image[1] == 'P' && item->image[2] == 'N' && item->image[3] == 'G';
-    resp.content_type = png ? "image/png" : "image/jpeg";
+    resp.content_type = sniffImageContentType(item->image.data(), item->image.size());
     return resp;
 }
 
@@ -1384,7 +1462,9 @@ HttpResponse FaceHandler::getImage(const HttpRequest& req) {
     std::ostringstream oss;
     oss << file.rdbuf();
     resp.body = oss.str();
-    resp.content_type = "image/jpeg";
+    // Content-Type from the payload, NOT from the ".jpg" file name (see
+    // sniffImageContentType): the stored bytes keep their original format.
+    resp.content_type = sniffImageContentType(resp.body.data(), resp.body.size());
     return resp;
 }
 

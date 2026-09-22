@@ -55,11 +55,26 @@ public:
     explicit PendingStore(std::size_t max_items = 500, long long ttl_seconds = 1800)
         : max_items_(max_items), ttl_seconds_(ttl_seconds) {}
 
+    /** @return the queue token; empty when the item could not be stored. */
     std::string add(PendingEnroll item);
-    std::shared_ptr<PendingEnroll> peek(const std::string& token) const;
+
+    /**
+     * Items are handed out as shared_ptr on purpose: each one carries a full
+     * photo, and the preview endpoint is hit once per card — copying the bytes
+     * on every peek would be pure waste.
+     */
+    std::shared_ptr<const PendingEnroll> peek(const std::string& token) const;
+    /**
+     * Is this exact image already waiting for a decision?
+     *
+     * A parked upload is NOT in the gallery yet, so an `image_hash` lookup
+     * misses it — without this check, importing the same archive twice before
+     * answering would queue the same photo again and again.
+     */
+    std::shared_ptr<const PendingEnroll> findByHash(const std::string& image_hash) const;
     /** Returns and REMOVES the item (a decision is consumed exactly once). */
-    std::shared_ptr<PendingEnroll> take(const std::string& token);
-    std::vector<PendingEnroll> list() const;
+    std::shared_ptr<const PendingEnroll> take(const std::string& token);
+    std::vector<std::shared_ptr<const PendingEnroll>> list() const;
     std::size_t size() const { return size_; }
 
     void clear() {
@@ -73,7 +88,7 @@ private:
     void purgeLocked();
 
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, PendingEnroll> items_;
+    std::unordered_map<std::string, std::shared_ptr<PendingEnroll>> items_;
     std::vector<std::string> order_;  // insertion order, for eviction
     std::size_t max_items_;
     long long   ttl_seconds_;

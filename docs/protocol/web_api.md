@@ -19,7 +19,7 @@
 |---|---|---|---|
 | GET | `/` | `text/html; charset=utf-8` | Web UI 页面 |
 | GET | `/api/faces` | `application/json; charset=utf-8` | 列出全部人脸 |
-| GET | `/api/image/<id>` | `image/jpeg` | 取某条人脸的原图 |
+| GET | `/api/image/<id>` | 按内容判定（见 §3） | 取某条人脸的原图 |
 | POST | `/api/faces/add` | `application/json; charset=utf-8` | 新增一条人脸 |
 | POST | `/api/faces/remove` | `application/json; charset=utf-8` | 删除一条人脸 |
 | POST | `/api/faces/clear` | `application/json; charset=utf-8` | 清空人脸库 |
@@ -27,7 +27,7 @@
 | POST | `/api/faces/add-template` | `application/json; charset=utf-8` | 追加为同一人的额外模板（多枪） |
 | GET | `/api/config` | `application/json; charset=utf-8` | 服务端启用了哪些可选行为（前端提示用） |
 | GET | `/api/faces/pending` | `application/json; charset=utf-8` | 待人工确认的入库请求 |
-| GET | `/api/pending/image/<token>` | `image/png` / `image/jpeg` | 待确认图片的预览 |
+| GET | `/api/pending/image/<token>` | 按内容判定（见 §3） | 待确认图片的预览 |
 | POST | `/api/faces/resolve` | `application/json; charset=utf-8` | **提交人工决定**（唯一写入高相似度人脸的入口） |
 | POST | `/api/faces/import-archive` | `multipart/form-data` 或二进制 | **批量导入：上传压缩包** |
 | POST | `/api/faces/import-batch` | `application/json` | **批量导入：宫格编辑后的图片列表** |
@@ -113,12 +113,27 @@ curl -o alice.jpg http://localhost:8080/api/image/550e8400-e29b-41d4-a716-446655
 
 | 情况 | 状态码 | 响应体 |
 |---|---|---|
-| 正常 | `200` | JPEG 二进制（`image/jpeg`） |
+| 正常 | `200` | 原始图片二进制，`Content-Type` 按内容判定 |
 | ID 不存在或 `image_path` 为空 | `404` | `Image not found` |
 | 文件无法读取 | `404` | `Cannot read image` |
 | URL 末尾无 ID | `404` | `Not Found` |
 
-> 返回的 Content-Type 固定为 `image/jpeg`，即使原文件是 PNG。
+**`Content-Type` 按图片魔数判定，不看文件名**（`/api/pending/image/<token>` 同理）：
+
+| 魔数 | `Content-Type` |
+|---|---|
+| `89 50 4E 47 0D 0A 1A 0A` | `image/png` |
+| `FF D8 FF` | `image/jpeg` |
+| `RIFF…WEBP` | `image/webp` |
+| `BM` | `image/bmp` |
+| `GIF87a` / `GIF89a` | `image/gif` |
+| 其他 | `application/octet-stream` |
+
+> **为什么不能固定一个值**：入库时图片**按原始字节存储**（PNG 上传就存 PNG），
+> 只是文件名统一为 `<id>.jpg`（库内命名约定，见
+> [database_schema.md](database_schema.md)）。之所以不做转码，是因为
+> `faces.image_hash` 记的是**存储字节**的 SHA-256，一旦重新编码，
+> 历史记录的去重指纹就会全部失效。
 
 ---
 

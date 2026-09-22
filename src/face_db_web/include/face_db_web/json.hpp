@@ -14,11 +14,13 @@
  * same scope (which is how every call site here uses it).
  */
 
+#include <cstddef>
 #include <cstdlib>
 #include <cstring>
-#include <map>
+#include <deque>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace face_db_web {
@@ -129,7 +131,24 @@ private:
         }
     }
 
+    /**
+     * Recursion guard. The parser is recursive-descent, so input like
+     * "[[[[[…" would otherwise exhaust the stack and crash the whole server
+     * (the request body limit alone does not bound the nesting depth).
+     */
+    static constexpr std::size_t kMaxDepth = 64;
+
+    struct DepthGuard {
+        Parser* p;
+        bool ok;
+        explicit DepthGuard(Parser& parser)
+            : p(&parser), ok(++parser.depth_ <= kMaxDepth) {}
+        ~DepthGuard() { --p->depth_; }
+    };
+
     bool parseObject(Value& out) {
+        DepthGuard guard(*this);
+        if (!guard.ok) { fail("nesting too deep"); return false; }
         out.type = Value::Type::Object;
         ++pos_;  // '{'
         skipWs();
@@ -157,6 +176,8 @@ private:
     }
 
     bool parseArray(Value& out) {
+        DepthGuard guard(*this);
+        if (!guard.ok) { fail("nesting too deep"); return false; }
         out.type = Value::Type::Array;
         ++pos_;  // '['
         skipWs();
@@ -289,8 +310,12 @@ private:
 
     std::string_view text_;
     size_t pos_ = 0;
+    size_t depth_ = 0;
     std::string error_;
-    std::vector<std::string> scratch_;  // owns de-escaped strings
+    // std::deque (NOT vector): push_back must never move existing elements,
+    // because every Value::str points into one of them. A vector reallocation
+    // would silently dangle the string_views handed out earlier.
+    std::deque<std::string> scratch_;  // owns de-escaped strings
 };
 
 /** Convenience one-shot parse. */

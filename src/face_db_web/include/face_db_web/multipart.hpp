@@ -109,6 +109,24 @@ public:
         return std::string();
     }
 
+    /**
+     * Move a part out of the form (empty name/type when absent).
+     *
+     * Use this for file uploads: the payload can be hundreds of megabytes and
+     * copying it out of the parsed form would double the peak memory of the
+     * request for no benefit.
+     */
+    MultipartPart take(const std::string& name) {
+        for (auto it = parts_.begin(); it != parts_.end(); ++it) {
+            if (it->name == name) {
+                MultipartPart out = std::move(*it);
+                parts_.erase(it);
+                return out;
+            }
+        }
+        return MultipartPart{};
+    }
+
 private:
     static std::string trim(const std::string& s) {
         size_t b = 0, e = s.size();

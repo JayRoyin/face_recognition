@@ -10,6 +10,23 @@ namespace face_db_web {
 
 namespace {
 
+/**
+ * Non-owning view over the uploaded archive.
+ *
+ * Exists so the helpers below can keep their `data.size()` / `&data[i]`
+ * spelling while the reader never copies the (potentially huge) buffer.
+ */
+struct ByteView {
+    const std::uint8_t* p = nullptr;
+    std::size_t         n = 0;
+
+    std::size_t size() const { return n; }
+    const std::uint8_t* data() const { return p; }
+    const std::uint8_t* begin() const { return p; }
+    const std::uint8_t* end() const { return p + n; }
+    const std::uint8_t& operator[](std::size_t i) const { return p[i]; }
+};
+
 uint32_t readU32(const uint8_t* p) {
     return static_cast<uint32_t>(p[0]) | (static_cast<uint32_t>(p[1]) << 8) |
            (static_cast<uint32_t>(p[2]) << 16) | (static_cast<uint32_t>(p[3]) << 24);
@@ -84,7 +101,7 @@ bool inflateInto(const uint8_t* src, std::size_t src_len, int window_bits,
 
 // ------------------------------------------------------------------ ZIP ----
 
-bool readZip(const std::vector<uint8_t>& data, std::vector<ArchiveEntry>& out,
+bool readZip(const ByteView data, std::vector<ArchiveEntry>& out,
              std::string& error, const ArchiveLimits& limits) {
     // End Of Central Directory: signature 0x06054b50, located in the last
     // 22 + 65535 bytes (the comment may be up to 64 KiB).
@@ -273,7 +290,7 @@ std::string tarString(const uint8_t* p, std::size_t n) {
     return std::string(reinterpret_cast<const char*>(p), static_cast<std::size_t>(end - p));
 }
 
-bool readTar(const std::vector<uint8_t>& data, std::vector<ArchiveEntry>& out,
+bool readTar(const ByteView data, std::vector<ArchiveEntry>& out,
              std::string& error, const ArchiveLimits& limits) {
     const std::size_t kBlock = 512;
     std::size_t p = 0;
@@ -347,7 +364,8 @@ bool readTar(const std::vector<uint8_t>& data, std::vector<ArchiveEntry>& out,
 }  // namespace
 
 ArchiveKind detectArchiveKind(const std::string& filename,
-                              const std::vector<uint8_t>& data) {
+                              const std::uint8_t* data_ptr, std::size_t size) {
+    const ByteView data{data_ptr, size};
     if (data.size() >= 2 && data[0] == 0x1f && data[1] == 0x8b) return ArchiveKind::Gzip;
     if (data.size() >= 4 && data[0] == 0x50 && data[1] == 0x4b &&
         (data[2] == 0x03 || data[2] == 0x05 || data[2] == 0x07)) {
@@ -363,16 +381,18 @@ ArchiveKind detectArchiveKind(const std::string& filename,
     return ArchiveKind::Unknown;
 }
 
-bool readArchive(const std::vector<uint8_t>& data, const std::string& filename,
+bool readArchive(const std::uint8_t* data_ptr, std::size_t size,
+                 const std::string& filename,
                  std::vector<ArchiveEntry>& out, std::string& error,
                  const ArchiveLimits& limits) {
     out.clear();
-    if (data.empty()) {
+    if (data_ptr == nullptr || size == 0) {
         error = "empty archive";
         return false;
     }
+    const ByteView data{data_ptr, size};
 
-    switch (detectArchiveKind(filename, data)) {
+    switch (detectArchiveKind(filename, data_ptr, size)) {
         case ArchiveKind::Zip:
             return readZip(data, out, error, limits);
 
@@ -380,6 +400,8 @@ bool readArchive(const std::vector<uint8_t>& data, const std::string& filename,
             return readTar(data, out, error, limits);
 
         case ArchiveKind::Gzip: {
+            // gzip must be expanded before the tar inside can be walked, so
+            // this is the one step that genuinely needs its own buffer.
             std::vector<uint8_t> tar;
             if (!inflateInto(data.data(), data.size(), 16 + MAX_WBITS, tar,
                              limits.max_total_bytes, error)) {
@@ -389,7 +411,7 @@ bool readArchive(const std::vector<uint8_t>& data, const std::string& filename,
                 error = "gzip stream contains no data (only .tar.gz / .tgz are supported)";
                 return false;
             }
-            return readTar(tar, out, error, limits);
+            return readTar(ByteView{tar.data(), tar.size()}, out, error, limits);
         }
 
         case ArchiveKind::Unknown:

@@ -36,7 +36,8 @@ std::string PendingStore::add(PendingEnroll item) {
     while (items_.count(item.token)) item.token = makeToken();
 
     const std::string token = item.token;
-    items_[token] = std::move(item);
+    item.token = token;
+    items_[token] = std::make_shared<PendingEnroll>(std::move(item));
     order_.push_back(token);
 
     while (order_.size() > max_items_) {
@@ -48,27 +49,41 @@ std::string PendingStore::add(PendingEnroll item) {
     return token;
 }
 
-std::shared_ptr<PendingEnroll> PendingStore::peek(const std::string& token) const {
+std::shared_ptr<const PendingEnroll> PendingStore::peek(const std::string& token) const {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = items_.find(token);
     if (it == items_.end()) return nullptr;
-    return std::make_shared<PendingEnroll>(it->second);
+    return it->second;  // shares the payload: no per-preview photo copy
 }
 
-std::shared_ptr<PendingEnroll> PendingStore::take(const std::string& token) {
+std::shared_ptr<const PendingEnroll> PendingStore::findByHash(
+    const std::string& image_hash) const {
+    if (image_hash.empty()) return nullptr;
+    std::lock_guard<std::mutex> lock(mutex_);
+    for (const auto& token : order_) {
+        auto it = items_.find(token);
+        if (it == items_.end()) continue;
+        if (it->second->image_hash == image_hash) return it->second;
+    }
+    return nullptr;
+}
+
+std::shared_ptr<const PendingEnroll> PendingStore::take(const std::string& token) {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = items_.find(token);
     if (it == items_.end()) return nullptr;
-    auto copy = std::make_shared<PendingEnroll>(it->second);
+    // The shared_ptr is returned, so the caller keeps the data alive even
+    // though the map entry is gone (a decision must be consumed exactly once).
+    auto item = it->second;
     items_.erase(it);
     order_.erase(std::find(order_.begin(), order_.end(), token));
     size_ = items_.size();
-    return copy;
+    return item;
 }
 
-std::vector<PendingEnroll> PendingStore::list() const {
+std::vector<std::shared_ptr<const PendingEnroll>> PendingStore::list() const {
     std::lock_guard<std::mutex> lock(mutex_);
-    std::vector<PendingEnroll> out;
+    std::vector<std::shared_ptr<const PendingEnroll>> out;
     out.reserve(items_.size());
     for (const auto& token : order_) {
         auto it = items_.find(token);
@@ -81,7 +96,7 @@ void PendingStore::purgeLocked() {
     if (ttl_seconds_ <= 0) return;
     const long long cutoff = nowSeconds() - ttl_seconds_;
     for (auto it = items_.begin(); it != items_.end();) {
-        if (it->second.created_at < cutoff) {
+        if (it->second->created_at < cutoff) {
             order_.erase(std::find(order_.begin(), order_.end(), it->first));
             it = items_.erase(it);
         } else {
